@@ -1,9 +1,12 @@
 node_modules/
 dist/
 .vite/
+.claude/
 .cargo-home/
 cargo-home/
 src-tauri/target/
+src-tauri/target_*/
+target_*/
 *.log
 *.tmp
 .DS_Store

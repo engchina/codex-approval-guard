@@ -7,6 +7,8 @@ import {
   FileClock,
   GitCommit,
   Settings,
+  Copy,
+  Check,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -44,6 +46,18 @@ function App() {
   const [autoApprove, setAutoApprove] = useState<AutoApproveOutcome | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const copyLogPath = async () => {
+    if (!state?.audit_log_path) return;
+    try {
+      await navigator.clipboard.writeText(state.audit_log_path);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      // ignore
+    }
+  };
 
   const pollingRef = useRef(false);
   const pausedRef = useRef(false);
@@ -149,15 +163,16 @@ function App() {
   }, [runObservation]);
 
   const formatTime = (isoString: string) => {
-    try {
-      const parts = isoString.split("T");
-      if (parts.length > 1) {
-        return parts[1].substring(0, 8); // e.g., 22:20:11
-      }
-    } catch (e) {
-      // fallback
+    const date = new Date(isoString);
+    if (Number.isNaN(date.getTime())) {
+      return isoString;
     }
-    return isoString;
+    return date.toLocaleTimeString(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
   };
 
   return (
@@ -278,12 +293,23 @@ function App() {
               <FileClock size={16} />
               <h2>直近の履歴</h2>
             </div>
+            {state?.audit_log_path && (
+              <button
+                type="button"
+                className="copy-path-btn"
+                onClick={copyLogPath}
+                title="ログファイルのパスをコピー"
+              >
+                {copied ? <Check size={12} className="success-icon" /> : <Copy size={12} />}
+                <span>パスをコピー</span>
+              </button>
+            )}
           </div>
 
           <div className="audit-list">
             {displayedAudits.length > 0 ? (
               displayedAudits.map((entry: AuditEntry) => (
-                <article className="audit-item" key={entry.id}>
+                <article className={`audit-item ${entry.decision.action}`} key={entry.id}>
                   <div className="item-meta">
                     <span className="item-time">{formatTime(entry.created_at)}</span>
                     <span className={`item-action-badge ${entry.decision.action}`}>
