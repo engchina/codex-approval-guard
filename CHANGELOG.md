@@ -20,6 +20,25 @@
 
 <!-- リファクタ、ツール、テスト、リリースプロセスなど、プロジェクト履歴に残したい保守作業。 -->
 
+## 0.1.5 - 2026-05-26
+
+### Added
+
+- WebView 内蔵の git commit dialog を `VK_ESCAPE` で閉じる高速経路を追加。
+
+### Changed
+
+- git commit dialog の自動閉鎖では `WM_CLOSE` が使えない場合に Escape 経路を優先し、UIA の閉じるボタン探索へ進む前に安全な候補を試すように改善。
+- Escape 経路では Codex の親 HWND と子 HWND にキーイベントを送信し、WebView2 内の modal に届きやすく改善。
+
+### Fixed
+
+- `跳过` / `Skip` / `スキップ` を git commit dialog の閉鎖候補から除外し、Codex メインウィンドウ内の無関係なボタンを誤クリックするリスクを低減。
+
+### Internal
+
+- Escape 経路と close/cancel matcher のテスト期待値を更新。
+
 ## 0.1.4 - 2026-05-26
 
 ### Added

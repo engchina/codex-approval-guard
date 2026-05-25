@@ -9,7 +9,7 @@ Codex の承認疲れを減らすための Windows / macOS 向け desktop assist
 - JSONL 監査ログ
 - Windows / macOS platform adapter の境界
 - Windows UI Automation 監視（バックグラウンド自動チェックと手動観察）
-- 検出時に policy 判定が approve なら自動承認（クリック）を実行
+- 検出時に policy 判定に応じて自動操作（承認・拒否・閉鎖）を実行
 
 ## 開発
 

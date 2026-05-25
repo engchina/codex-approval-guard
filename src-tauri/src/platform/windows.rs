@@ -336,6 +336,18 @@ fn click_no_inner(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
             return Ok(outcome);
         }
 
+        // WebView 内蔵 modal の git commit dialog は VK_ESCAPE で閉じられる（次に速い経路）。
+        // Codex Desktop の commit dialog には UIA 上「关闭/✕」を持つボタンが存在せず、
+        // UIA 検索すると無関係な「跳过」等を誤クリックする事故が発生したため、
+        // ユーザーが手動で確認した Escape キー経路を優先する。
+        if is_git_commit
+            && !title_says_git_commit
+            && try_send_escape_to_window(window, &mut outcome)
+        {
+            outcome.yes_invoked = true;
+            return Ok(outcome);
+        }
+
         let (matcher, label, type_filter): ClickTargetMatch = if is_git_commit {
             (is_close_or_cancel_button, "「关闭/取消」", Some(is_close_button_type))
         } else {
@@ -456,6 +468,18 @@ fn click_yes_inner(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
         if is_git_commit
             && title_says_git_commit
             && try_close_window_via_wm_close(window, &mut outcome)
+        {
+            outcome.yes_invoked = true;
+            return Ok(outcome);
+        }
+
+        // WebView 内蔵 modal の git commit dialog は VK_ESCAPE で閉じられる（次に速い経路）。
+        // Codex Desktop の commit dialog には UIA 上「关闭/✕」を持つボタンが存在せず、
+        // UIA 検索すると無関係な「跳过」等を誤クリックする事故が発生したため、
+        // ユーザーが手動で確認した Escape キー経路を優先する。
+        if is_git_commit
+            && !title_says_git_commit
+            && try_send_escape_to_window(window, &mut outcome)
         {
             outcome.yes_invoked = true;
             return Ok(outcome);
@@ -876,6 +900,156 @@ fn ensure_window_active(window: &UIElement) {
     }
 }
 
+/// VK_ESCAPE のキーコード。windows-sys では `Win32_UI_Input_KeyboardAndMouse` feature
+/// に存在するが、本プロジェクトの Cargo.toml の features に明示されておらず、ハードコード
+/// した方が依存を増やさずに済む（VK 値は Windows ABI で固定）。
+const VK_ESCAPE_RAW: usize = 0x1B;
+/// WM_KEYDOWN の lparam: 繰り返し回数=1, scan code=0x01 (Escape), 拡張ビットなし。
+const ESC_LPARAM_DOWN: isize = 0x0001_0001;
+/// WM_KEYUP の lparam: keydown と同じ + bit30 (前状態=押下) + bit31 (遷移=離す)。
+const ESC_LPARAM_UP: isize = 0xC001_0001u32 as i32 as isize;
+
+extern "system" fn collect_child_hwnds(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    lparam: windows_sys::Win32::Foundation::LPARAM,
+) -> windows_sys::core::BOOL {
+    let collector = unsafe {
+        &mut *(lparam as *mut Vec<windows_sys::Win32::Foundation::HWND>)
+    };
+    if collector.len() < 64 {
+        collector.push(hwnd);
+        1
+    } else {
+        0
+    }
+}
+
+/// WebView 内蔵 modal の git commit dialog に対し、`VK_ESCAPE` を PostMessage で
+/// 送信して閉じる（次に速い経路）。
+///
+/// WebView2 (Chromium) は合成キーボード入力を多くのケースで無視するため、
+/// 単純な PostMessageW では届かない。そこで以下のいずれかが成功するまで段階的に試す。
+///
+/// 1. `AttachThreadInput` で Codex のスレッドへ入力キューを連結 → `GetFocus()` で
+///    Codex 側の現在のフォーカス HWND を取得 → そこへ PostMessage（最も精度が高い）。
+/// 2. 上が取れなかった場合は、Codex 親 HWND + `EnumChildWindows` で得た子孫 HWND 全部に
+///    ブロードキャスト（フォールバック）。
+fn try_send_escape_to_window(window: &UIElement, outcome: &mut ClickOutcome) -> bool {
+    let handle = match window.get_native_window_handle() {
+        Ok(handle) => handle,
+        Err(error) => {
+            outcome.notes.push(format!(
+                "Escape 経路: HWND 取得失敗（{error}）。UIA 経路へフォールバック。"
+            ));
+            return false;
+        }
+    };
+    let hwnd_win: windows::Win32::Foundation::HWND = handle.into();
+    let hwnd_raw = hwnd_win.0 as windows_sys::Win32::Foundation::HWND;
+    if hwnd_raw.is_null() {
+        outcome
+            .notes
+            .push("Escape 経路: HWND が NULL のためフォールバック。".to_string());
+        return false;
+    }
+
+    // ステップ1: AttachThreadInput で Codex のフォーカス先 HWND を取得して送信。
+    let codex_tid = unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
+            hwnd_raw,
+            std::ptr::null_mut(),
+        )
+    };
+    let my_tid = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
+    let mut focused_raw: windows_sys::Win32::Foundation::HWND = std::ptr::null_mut();
+    let mut attached = false;
+    if codex_tid != 0 && codex_tid != my_tid {
+        let ok = unsafe {
+            windows_sys::Win32::System::Threading::AttachThreadInput(my_tid, codex_tid, 1)
+        };
+        if ok != 0 {
+            attached = true;
+            focused_raw =
+                unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetFocus() };
+        }
+    }
+    if attached {
+        unsafe {
+            windows_sys::Win32::System::Threading::AttachThreadInput(my_tid, codex_tid, 0);
+        }
+    }
+
+    if !focused_raw.is_null() {
+        let ok_down = unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
+                focused_raw,
+                windows_sys::Win32::UI::WindowsAndMessaging::WM_KEYDOWN,
+                VK_ESCAPE_RAW,
+                ESC_LPARAM_DOWN,
+            )
+        };
+        let ok_up = unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
+                focused_raw,
+                windows_sys::Win32::UI::WindowsAndMessaging::WM_KEYUP,
+                VK_ESCAPE_RAW,
+                ESC_LPARAM_UP,
+            )
+        };
+        if ok_down != 0 && ok_up != 0 {
+            outcome.notes.push(format!(
+                "Escape 経路: AttachThreadInput → GetFocus HWND={:p} に VK_ESCAPE 送信（fast-path）。",
+                focused_raw
+            ));
+            return true;
+        }
+    }
+
+    // ステップ2: フォーカス先が取得できない／PostMessage 失敗時は、親+子孫の全 HWND に
+    // ブロードキャストする（最後の保険、効きにくいが副作用は小さい）。
+    let mut targets: Vec<windows_sys::Win32::Foundation::HWND> = vec![hwnd_raw];
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::EnumChildWindows(
+            hwnd_raw,
+            Some(collect_child_hwnds),
+            &mut targets as *mut _ as windows_sys::Win32::Foundation::LPARAM,
+        );
+    }
+    let mut posted = 0usize;
+    for target in &targets {
+        let ok_down = unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
+                *target,
+                windows_sys::Win32::UI::WindowsAndMessaging::WM_KEYDOWN,
+                VK_ESCAPE_RAW,
+                ESC_LPARAM_DOWN,
+            )
+        };
+        let ok_up = unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
+                *target,
+                windows_sys::Win32::UI::WindowsAndMessaging::WM_KEYUP,
+                VK_ESCAPE_RAW,
+                ESC_LPARAM_UP,
+            )
+        };
+        if ok_down != 0 && ok_up != 0 {
+            posted += 1;
+        }
+    }
+    if posted == 0 {
+        outcome
+            .notes
+            .push("Escape 経路: AttachThreadInput/Broadcast いずれも失敗。UIA 経路へフォールバック。".to_string());
+        return false;
+    }
+    outcome.notes.push(format!(
+        "Escape 経路: AttachThreadInput でフォーカス取得不可。親+子 HWND {} 個へブロードキャスト送信（fallback）。",
+        posted
+    ));
+    true
+}
+
 /// 独立 HWND として開かれている git commit dialog に `WM_CLOSE` を送り、
 /// UIA ツリーを再走査せずに dialog を閉じる。送信に成功した場合 `true` を返す。
 /// HWND が取得できない／PostMessage に失敗した場合は `false` を返し、呼び出し側で
@@ -999,12 +1173,13 @@ fn invoke_candidate(candidate: &Candidate, parent_window: &UIElement) -> Result<
 fn is_close_or_cancel_button(name: &str) -> bool {
     let trimmed = name.trim();
     let lower = trimmed.to_lowercase();
+    // 注意: "跳过 / Skip / スキップ" は Codex メインウィンドウのサイドバー等にも存在し、
+    // commit dialog の関閉対象とは無関係なケースが観測されたため、ここから除外する。
+    // close icon と「关闭/閉じる/取消/Cancel」系の明示的なラベルのみを許可する。
     trimmed == "关闭"
         || trimmed == "閉じる"
         || trimmed == "取消"
         || trimmed == "キャンセル"
-        || trimmed == "跳过"
-        || trimmed == "スキップ"
         || trimmed == "X"
         || trimmed == "x"
         || trimmed == "✕"
@@ -1014,7 +1189,6 @@ fn is_close_or_cancel_button(name: &str) -> bool {
         || lower == "close"
         || lower == "cancel"
         || lower == "dismiss"
-        || lower == "skip"
         || lower == "close dialog"
         || lower == "close modal"
         || lower == "关闭对话框"
@@ -1367,9 +1541,9 @@ mod tests {
     #[test]
     fn matches_close_or_cancel_button_variants() {
         for name in [
-            "关闭", "閉じる", "取消", "キャンセル", "跳过", "スキップ",
+            "关闭", "閉じる", "取消", "キャンセル",
             "X", "x", "✕", "✖", "×", "⨯",
-            "Close", "close", "Cancel", "Dismiss", "Skip",
+            "Close", "close", "Cancel", "Dismiss",
             "Close dialog", "Close Modal", "关闭对话框",
         ] {
             assert!(is_close_or_cancel_button(name), "should match `{name}`");
@@ -1377,8 +1551,13 @@ mod tests {
     }
 
     #[test]
-    fn does_not_match_unrelated_buttons_as_close() {
-        for name in ["提交", "继续", "Submit", "Continue", "确认", "1. 是"] {
+    fn does_not_match_skip_or_unrelated_buttons_as_close() {
+        // 「跳过 / Skip / スキップ」は Codex メインウィンドウの別箇所にも存在し、
+        // commit dialog の関閉対象とは無関係なため close マッチャから除外する。
+        for name in [
+            "提交", "继续", "Submit", "Continue", "确认", "1. 是",
+            "跳过", "スキップ", "Skip", "skip",
+        ] {
             assert!(
                 !is_close_or_cancel_button(name),
                 "should not match `{name}` as close/cancel"
