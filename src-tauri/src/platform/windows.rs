@@ -1,5 +1,5 @@
 use crate::policy::ApprovalRequest;
-use super::parser::{parse_observed_approval_with_context, looks_like_git_commit_window, is_pending_approval_badge};
+use super::parser::{parse_observed_approval_with_context, looks_like_git_commit_window, title_matches_git_commit, is_pending_approval_badge};
 use super::ClickOutcome;
 use super::ObserveDiagnostics;
 use super::ObservedApproval;
@@ -26,6 +26,13 @@ const UIA_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_TOP_LEVEL_WINDOWS: usize = 120;
 const MAX_TEXT_LINES: usize = 1200;
 const MAX_TREE_DEPTH: usize = 20;
+
+/// click 経路で利用する候補マッチ設定。matcher は要素名、type_filter は control_type を絞る。
+type ClickTargetMatch = (
+    fn(&str) -> bool,
+    &'static str,
+    Option<fn(ControlType) -> bool>,
+);
 
 pub fn snapshot_active_window() -> PlatformSnapshot {
     match run_uia_task(focused_window_summary) {
@@ -55,12 +62,12 @@ pub fn observe_approval_request() -> Result<(Option<ObservedApproval>, ObserveDi
     run_uia_task(observe_approval_request_inner)
 }
 
-pub fn click_yes_in_codex_approval() -> Result<ClickOutcome, String> {
-    run_uia_task(click_yes_inner)
+pub fn click_yes_in_codex_approval(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
+    run_uia_task(move || click_yes_inner(is_git_commit_hint))
 }
 
-pub fn click_no_in_codex_approval() -> Result<ClickOutcome, String> {
-    run_uia_task(click_no_inner)
+pub fn click_no_in_codex_approval(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
+    run_uia_task(move || click_no_inner(is_git_commit_hint))
 }
 
 /// 直近のユーザー入力（キーボード/マウス）から現在までの経過ミリ秒。
@@ -196,6 +203,30 @@ fn parse_window(
     walkers: &[(&str, &UITreeWalker)],
     diagnostics: &mut ObserveDiagnostics,
 ) -> Option<ObservedApproval> {
+    // タイトルだけで git commit dialog と判定できる場合、UI ツリー全走査を省略する。
+    // 独立 HWND の dialog では title が直接 "提交更改" 等になり、collect_text を呼ばずに
+    // 即座に承認候補を返せるため、観測〜自動操作までのレイテンシを大幅に短縮できる。
+    if title_matches_git_commit(title) {
+        diagnostics.notes.push(format!(
+            "  parse: title=\"{}\" view=title-only (git commit short-circuit)",
+            short(title, 40),
+        ));
+        return Some(ObservedApproval {
+            request: ApprovalRequest {
+                id: None,
+                source_app: "Codex Desktop".to_string(),
+                window_title: title.to_string(),
+                prompt_text: title.to_string(),
+                command: Some("git commit (dialog)".to_string()),
+                cwd: None,
+                target_paths: Vec::new(),
+                requested_permission: Some("git_commit_dismiss".to_string()),
+            },
+            raw_text: vec![title.to_string()],
+            detected_by: "Windows UI Automation title-only observer (git commit)".to_string(),
+        });
+    }
+
     for (view_name, walker) in walkers {
         let mut raw_text = Vec::new();
         let mut keyword_hit = false;
@@ -208,7 +239,9 @@ fn parse_window(
             keyword_hit,
         ));
 
-        // Git commit window check
+        // Git commit window check（タイトル不一致だが本文に含まれるケース。
+        // この場合 dialog は WebView 内蔵 modal のため WM_CLOSE は使えない。
+        // 通常の UIA 「关闭/取消」ボタン点击に委ねる）。
         if looks_like_git_commit_window(title, &raw_text) {
             let prompt_text = raw_text.join("\n");
             return Some(ObservedApproval {
@@ -249,7 +282,7 @@ fn parse_window(
 const MAX_CLICK_TREE_DEPTH: usize = 60;
 const MAX_DUMP_ENTRIES: usize = 80;
 
-fn click_no_inner() -> Result<ClickOutcome, String> {
+fn click_no_inner(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
     let automation = UIAutomation::new().map_err(|error| error.to_string())?;
     let control_walker = automation
         .get_control_view_walker()
@@ -272,27 +305,44 @@ fn click_no_inner() -> Result<ClickOutcome, String> {
             continue;
         }
 
-        outcome.target_window = candidate.title.clone();
-        outcome.notes.push(format!(
-            "ターゲット: title=\"{}\" process={}",
-            short(&candidate.title, 60),
-            candidate.process_name.as_deref().unwrap_or("?"),
-        ));
-
-        // Collect raw text to determine if it is a git commit window
-        let mut raw_text = Vec::new();
-        let mut keyword_hit = false;
-        collect_text(&raw_walker, window, 0, &mut raw_text, &mut keyword_hit);
-
-        let is_git_commit = looks_like_git_commit_window(&candidate.title, &raw_text);
-
-        let (matcher, label) = if is_git_commit {
-            (is_close_or_cancel_button as fn(&str) -> bool, "「关闭/取消」")
+        // git commit dialog の判定は観測フェーズの hint を優先する。
+        // dialog が独立 HWND の場合は title が直接命中するため、本文走査なしで確定できる。
+        // hint が立っていない場合のみ、念のため本文を走査して救済する（fallback）。
+        let title_says_git_commit = title_matches_git_commit(&candidate.title);
+        let is_git_commit = if is_git_commit_hint || title_says_git_commit {
+            true
         } else {
-            (is_first_no_option as fn(&str) -> bool, "「3. 否」")
+            let mut raw_text = Vec::new();
+            let mut keyword_hit = false;
+            collect_text(&raw_walker, window, 0, &mut raw_text, &mut keyword_hit);
+            looks_like_git_commit_window(&candidate.title, &raw_text)
         };
 
-        let no_candidates = collect_candidates(&raw_walker, window, matcher);
+        outcome.target_window = candidate.title.clone();
+        outcome.notes.push(format!(
+            "ターゲット: title=\"{}\" process={} git_commit={}",
+            short(&candidate.title, 60),
+            candidate.process_name.as_deref().unwrap_or("?"),
+            is_git_commit,
+        ));
+
+        // 独立 HWND の git commit dialog は WM_CLOSE で即座に閉じられる（最速経路）。
+        // WM_CLOSE が失敗した場合は UIA 経路へフォールバック。
+        if is_git_commit
+            && title_says_git_commit
+            && try_close_window_via_wm_close(window, &mut outcome)
+        {
+            outcome.yes_invoked = true;
+            return Ok(outcome);
+        }
+
+        let (matcher, label, type_filter): ClickTargetMatch = if is_git_commit {
+            (is_close_or_cancel_button, "「关闭/取消」", Some(is_close_button_type))
+        } else {
+            (is_first_no_option, "「3. 否」", None)
+        };
+
+        let no_candidates = collect_candidates_with_filter(&raw_walker, window, matcher, type_filter);
         log_candidates(&mut outcome, label, &no_candidates);
         let no_target = match pick_best(&no_candidates) {
             Some(target) => target,
@@ -352,7 +402,7 @@ fn click_no_inner() -> Result<ClickOutcome, String> {
     Err("Codex プロセスのウィンドウが見つかりませんでした。".to_string())
 }
 
-fn click_yes_inner() -> Result<ClickOutcome, String> {
+fn click_yes_inner(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
     let automation = UIAutomation::new().map_err(|error| error.to_string())?;
     let control_walker = automation
         .get_control_view_walker()
@@ -375,27 +425,49 @@ fn click_yes_inner() -> Result<ClickOutcome, String> {
             continue;
         }
 
-        outcome.target_window = candidate.title.clone();
-        outcome.notes.push(format!(
-            "ターゲット: title=\"{}\" process={}",
-            short(&candidate.title, 60),
-            candidate.process_name.as_deref().unwrap_or("?"),
-        ));
-
-        // Collect raw text to determine if it is a git commit window
-        let mut raw_text = Vec::new();
-        let mut keyword_hit = false;
-        collect_text(&raw_walker, window, 0, &mut raw_text, &mut keyword_hit);
-
-        let is_git_commit = looks_like_git_commit_window(&candidate.title, &raw_text);
-
-        let (matcher, label) = if is_git_commit {
-            (is_close_or_cancel_button as fn(&str) -> bool, "「关闭/取消」")
+        // git commit dialog の判定は観測フェーズの hint を優先する。
+        // dialog が独立 HWND の場合は title が直接命中するため、本文走査なしで確定できる。
+        // hint が立っていない場合のみ、念のため本文を走査して救済する（fallback）。
+        let title_says_git_commit = title_matches_git_commit(&candidate.title);
+        let is_git_commit = if is_git_commit_hint || title_says_git_commit {
+            true
         } else {
-            (is_first_yes_option as fn(&str) -> bool, "「1. 是」")
+            let mut raw_text = Vec::new();
+            let mut keyword_hit = false;
+            collect_text(&raw_walker, window, 0, &mut raw_text, &mut keyword_hit);
+            looks_like_git_commit_window(&candidate.title, &raw_text)
         };
 
-        let yes_candidates = collect_candidates(&raw_walker, window, matcher);
+        // git commit dialog では本来の独立 HWND を優先的にターゲットしたいので、
+        // 主ウィンドウ（"Codex" タイトル）を検出した場合は、後続の dialog HWND を待つ。
+        // hint が立っている状態で title が一致しないということは、まだ dialog HWND が
+        // top-level に列挙されていないか、WebView 内蔵 modal の可能性がある。
+        // ここでは安全側で続行（UIA 検索フォールバック）。
+        outcome.target_window = candidate.title.clone();
+        outcome.notes.push(format!(
+            "ターゲット: title=\"{}\" process={} git_commit={}",
+            short(&candidate.title, 60),
+            candidate.process_name.as_deref().unwrap_or("?"),
+            is_git_commit,
+        ));
+
+        // 独立 HWND の git commit dialog は WM_CLOSE で即座に閉じられる（最速経路）。
+        // WM_CLOSE が失敗した場合は UIA 経路へフォールバック。
+        if is_git_commit
+            && title_says_git_commit
+            && try_close_window_via_wm_close(window, &mut outcome)
+        {
+            outcome.yes_invoked = true;
+            return Ok(outcome);
+        }
+
+        let (matcher, label, type_filter): ClickTargetMatch = if is_git_commit {
+            (is_close_or_cancel_button, "「关闭/取消」", Some(is_close_button_type))
+        } else {
+            (is_first_yes_option, "「1. 是」", None)
+        };
+
+        let yes_candidates = collect_candidates_with_filter(&raw_walker, window, matcher, type_filter);
         log_candidates(&mut outcome, label, &yes_candidates);
         let yes_target = match pick_best(&yes_candidates) {
             Some(target) => target,
@@ -549,8 +621,20 @@ fn collect_candidates(
     root: &UIElement,
     matcher: impl Fn(&str) -> bool,
 ) -> Vec<Candidate> {
+    collect_candidates_with_filter(walker, root, matcher, None)
+}
+
+/// `type_filter` を指定すると、name 命中要素のうち control_type が条件を満たすものだけを
+/// Candidate に格上げする。WebView2 のような巨大ツリーで「关闭/X/Close」のような汎用
+/// マッチャを使う際、pattern クエリ（IPC）の回数を大幅に減らせる。
+fn collect_candidates_with_filter(
+    walker: &UITreeWalker,
+    root: &UIElement,
+    matcher: impl Fn(&str) -> bool,
+    type_filter: Option<fn(ControlType) -> bool>,
+) -> Vec<Candidate> {
     let mut out = Vec::new();
-    collect_candidates_recursive(walker, root, 0, &matcher, &mut out);
+    collect_candidates_recursive(walker, root, 0, &matcher, type_filter, &mut out);
     out
 }
 
@@ -559,6 +643,7 @@ fn collect_candidates_recursive(
     element: &UIElement,
     depth: usize,
     matcher: &impl Fn(&str) -> bool,
+    type_filter: Option<fn(ControlType) -> bool>,
     out: &mut Vec<Candidate>,
 ) {
     if depth > MAX_CLICK_TREE_DEPTH || out.len() >= 30 {
@@ -566,20 +651,37 @@ fn collect_candidates_recursive(
     }
     let name = safe_name(element);
     if matcher(&name) && !is_system_caption_or_titlebar_element(element) {
-        out.push(Candidate {
-            element: element.clone(),
-            name,
-            control_type: element.get_control_type().ok(),
-            has_invoke: element.get_pattern::<UIInvokePattern>().is_ok(),
-            has_select: element.get_pattern::<UISelectionItemPattern>().is_ok(),
-            has_legacy: element.get_pattern::<UILegacyIAccessiblePattern>().is_ok(),
-        });
+        let control_type = element.get_control_type().ok();
+        let type_ok = match (type_filter, control_type) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(filter), Some(ctype)) => filter(ctype),
+        };
+        if type_ok {
+            out.push(Candidate {
+                element: element.clone(),
+                name,
+                control_type,
+                has_invoke: element.get_pattern::<UIInvokePattern>().is_ok(),
+                has_select: element.get_pattern::<UISelectionItemPattern>().is_ok(),
+                has_legacy: element.get_pattern::<UILegacyIAccessiblePattern>().is_ok(),
+            });
+        }
     }
     if let Some(children) = walker.get_children(element) {
         for child in children {
-            collect_candidates_recursive(walker, &child, depth + 1, matcher, out);
+            collect_candidates_recursive(walker, &child, depth + 1, matcher, type_filter, out);
         }
     }
+}
+
+/// git commit dialog の「关闭/取消」候補として許可する control_type。
+/// WebView2 内では Hyperlink/Button が混在するため両方許可する。
+fn is_close_button_type(control_type: ControlType) -> bool {
+    matches!(
+        control_type,
+        ControlType::Button | ControlType::Hyperlink | ControlType::SplitButton
+    )
 }
 
 fn pick_best(candidates: &[Candidate]) -> Option<&Candidate> {
@@ -772,6 +874,48 @@ fn ensure_window_active(window: &UIElement) {
         windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd_raw);
         std::thread::sleep(Duration::from_millis(150));
     }
+}
+
+/// 独立 HWND として開かれている git commit dialog に `WM_CLOSE` を送り、
+/// UIA ツリーを再走査せずに dialog を閉じる。送信に成功した場合 `true` を返す。
+/// HWND が取得できない／PostMessage に失敗した場合は `false` を返し、呼び出し側で
+/// 既存の UIA 経由クリックにフォールバックする。
+fn try_close_window_via_wm_close(window: &UIElement, outcome: &mut ClickOutcome) -> bool {
+    let handle = match window.get_native_window_handle() {
+        Ok(handle) => handle,
+        Err(error) => {
+            outcome.notes.push(format!(
+                "WM_CLOSE 経路: HWND 取得失敗（{error}）。UIA 経路へフォールバック。"
+            ));
+            return false;
+        }
+    };
+    let hwnd_win: windows::Win32::Foundation::HWND = handle.into();
+    let hwnd_raw = hwnd_win.0 as windows_sys::Win32::Foundation::HWND;
+    if hwnd_raw.is_null() {
+        outcome
+            .notes
+            .push("WM_CLOSE 経路: HWND が NULL のためフォールバック。".to_string());
+        return false;
+    }
+    let ok = unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
+            hwnd_raw,
+            windows_sys::Win32::UI::WindowsAndMessaging::WM_CLOSE,
+            0,
+            0,
+        )
+    };
+    if ok == 0 {
+        outcome
+            .notes
+            .push("WM_CLOSE 経路: PostMessageW 失敗。UIA 経路へフォールバック。".to_string());
+        return false;
+    }
+    outcome
+        .notes
+        .push("WM_CLOSE 経路: dialog HWND に WM_CLOSE を送信しました（fast-path）。".to_string());
+    true
 }
 
 fn click_element_background(element: &UIElement) -> Result<(), String> {

@@ -20,6 +20,28 @@
 
 <!-- リファクタ、ツール、テスト、リリースプロセスなど、プロジェクト履歴に残したい保守作業。 -->
 
+## 0.1.4 - 2026-05-26
+
+### Added
+
+- git commit dialog をタイトルだけで即時検出し、独立 HWND の場合は `WM_CLOSE` で高速に閉じる経路を追加。
+- 自動操作後の監査ログに、対象ウィンドウとクリック経路の trace notes を記録するように追加。
+
+### Changed
+
+- 承認リクエストのバックグラウンドポーリング間隔と自動操作 cooldown を短縮し、git commit dialog などの応答を速く改善。
+- git commit dialog と判定済みのリクエストではクリック時の UI ツリー再走査を抑え、観測結果の hint を優先するように改善。
+- `关闭/取消` 候補探索時に control type を絞り、WebView2 の巨大 UI ツリーで不要な pattern 取得を減らすように改善。
+
+### Fixed
+
+- git commit dialog の自動閉鎖が UI ツリー走査待ちで遅くなる問題を軽減。
+
+### Internal
+
+- git commit dialog のタイトル判定を `title_matches_git_commit` に分離。
+- Windows click 経路に `is_git_commit_hint` を渡せるように platform API を更新。
+
 ## 0.1.3 - 2026-05-25
 
 ### Added

@@ -38,8 +38,8 @@ const riskLabels: Record<string, string> = {
 };
 
 const AUDIT_DISPLAY_LIMIT = 3;
-const BACKGROUND_POLL_MS = 1500;
-const AUTO_APPROVE_COOLDOWN_MS = 4000;
+const BACKGROUND_POLL_MS = 600;
+const AUTO_APPROVE_COOLDOWN_MS = 1500;
 
 function App() {
   const [state, setState] = useState<GuardState | null>(null);

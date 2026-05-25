@@ -185,31 +185,52 @@ async fn auto_approve_observed_request(
         ));
     }
 
+    // 観測フェーズで git commit dialog と判定済みなら click 側で再走査しないよう hint を渡す。
+    let is_git_commit_hint = request
+        .requested_permission
+        .as_deref()
+        .map(|permission| permission == "git_commit_dismiss")
+        .unwrap_or(false);
+
     let click = if is_deny {
-        async_runtime::spawn_blocking(platform::click_no_in_codex_approval)
+        async_runtime::spawn_blocking(move || platform::click_no_in_codex_approval(is_git_commit_hint))
             .await
             .map_err(|error| format!("自動操作の実行に失敗しました: {error}"))??
     } else {
-        async_runtime::spawn_blocking(platform::click_yes_in_codex_approval)
+        async_runtime::spawn_blocking(move || platform::click_yes_in_codex_approval(is_git_commit_hint))
             .await
             .map_err(|error| format!("自動操作の実行に失敗しました: {error}"))??
     };
 
     let mut audit_decision = decision.clone();
+    // 自動操作の trace を notes として保存し、原因追跡を容易にする。
+    let notes_trace = if click.notes.is_empty() {
+        String::new()
+    } else {
+        format!(" notes=[{}]", click.notes.join(" | "))
+    };
     audit_decision.reason = if is_deny {
         format!(
-            "{}（auto-denied: no={}, submit={}）",
-            audit_decision.reason, click.yes_invoked, click.submit_invoked
+            "{}（auto-denied: no={}, submit={}, target=\"{}\"{}）",
+            audit_decision.reason,
+            click.yes_invoked,
+            click.submit_invoked,
+            click.target_window,
+            notes_trace
         )
     } else if is_dismiss {
         format!(
-            "{}（auto-dismissed: close={}）",
-            audit_decision.reason, click.yes_invoked
+            "{}（auto-dismissed: close={}, target=\"{}\"{}）",
+            audit_decision.reason, click.yes_invoked, click.target_window, notes_trace
         )
     } else {
         format!(
-            "{}（auto-approved: yes={}, submit={}）",
-            audit_decision.reason, click.yes_invoked, click.submit_invoked
+            "{}（auto-approved: yes={}, submit={}, target=\"{}\"{}）",
+            audit_decision.reason,
+            click.yes_invoked,
+            click.submit_invoked,
+            click.target_window,
+            notes_trace
         )
     };
     state.audit.append(&request, &audit_decision)?;

@@ -49,13 +49,13 @@ pub fn observe_approval_request() -> Result<(Option<ObservedApproval>, ObserveDi
 }
 
 #[cfg(target_os = "windows")]
-pub fn click_yes_in_codex_approval() -> Result<ClickOutcome, String> {
-    windows::click_yes_in_codex_approval()
+pub fn click_yes_in_codex_approval(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
+    windows::click_yes_in_codex_approval(is_git_commit_hint)
 }
 
 #[cfg(target_os = "windows")]
-pub fn click_no_in_codex_approval() -> Result<ClickOutcome, String> {
-    windows::click_no_in_codex_approval()
+pub fn click_no_in_codex_approval(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
+    windows::click_no_in_codex_approval(is_git_commit_hint)
 }
 
 #[cfg(target_os = "windows")]
@@ -75,12 +75,12 @@ pub fn observe_approval_request() -> Result<(Option<ObservedApproval>, ObserveDi
 }
 
 #[cfg(target_os = "macos")]
-pub fn click_yes_in_codex_approval() -> Result<ClickOutcome, String> {
+pub fn click_yes_in_codex_approval(_is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
     Err("macOS では自動承認は未対応です。".to_string())
 }
 
 #[cfg(target_os = "macos")]
-pub fn click_no_in_codex_approval() -> Result<ClickOutcome, String> {
+pub fn click_no_in_codex_approval(_is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
     Err("macOS では自動拒否は未対応です。".to_string())
 }
 

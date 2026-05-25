@@ -86,12 +86,7 @@ pub fn is_pending_approval_badge(label: &str) -> bool {
 }
 
 pub fn looks_like_git_commit_window(title: &str, raw_text: &[String]) -> bool {
-    let title_lower = title.to_lowercase();
-    if title_lower.contains("提交更改")
-        || title_lower.contains("commit changes")
-        || title_lower.contains("変更をコミット")
-        || title_lower.contains("コミット")
-    {
+    if title_matches_git_commit(title) {
         return true;
     }
     let combined_text = raw_text.join("\n").to_lowercase();
@@ -100,6 +95,17 @@ pub fn looks_like_git_commit_window(title: &str, raw_text: &[String]) -> bool {
         || combined_text.contains("変更をコミット")
         || (combined_text.contains("提交消息") && combined_text.contains("分支"))
         || (combined_text.contains("commit message") && combined_text.contains("branch"))
+}
+
+/// タイトルのみで git commit dialog かどうか判定する。
+/// title だけで命中する場合、Codex Desktop は独立した HWND（Tauri Window）として
+/// dialog を開いていると判断でき、WM_CLOSE 等の HWND 直接操作が安全に利用できる。
+pub fn title_matches_git_commit(title: &str) -> bool {
+    let title_lower = title.to_lowercase();
+    title_lower.contains("提交更改")
+        || title_lower.contains("commit changes")
+        || title_lower.contains("変更をコミット")
+        || title_lower.contains("コミット")
 }
 
 fn normalize_raw_text(raw_text: Vec<String>) -> Vec<String> {
