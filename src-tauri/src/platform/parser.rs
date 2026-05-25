@@ -55,6 +55,36 @@ pub fn parse_observed_approval_with_context(
     })
 }
 
+/// サイドバー上で「承認待ち」を示すバッジ文字列かどうかを判定する。
+///
+/// Codex Desktop は、現在アクティブでない会話に承認待ちが発生した場合、
+/// サイドバーのアイテムに小さなバッジ（中国語: 「等待批准」/「等待审批」/
+/// 日本語: 「承認待ち」/「承認が必要」/ 英語: "Awaiting approval" / "Pending approval"）
+/// を表示する。承認ダイアログ本体は当該会話を選択するまで UI ツリーに現れないため、
+/// このバッジを手掛かりに先にサイドバーアイテムを `Invoke` してアクティブ化する必要がある。
+///
+/// マッチ条件は「短いラベル文字列の中に既知のバッジ語が含まれる」こと。
+/// 長文の中の偶然の一致（例: ヘルプテキストの "Awaiting approval" の説明）を拾わないよう
+/// 80 文字を超えるテキストは除外する。
+pub fn is_pending_approval_badge(label: &str) -> bool {
+    let trimmed = label.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > 80 {
+        return false;
+    }
+    let lower = trimmed.to_lowercase();
+    trimmed.contains("等待批准")
+        || trimmed.contains("等待审批")
+        || trimmed.contains("待批准")
+        || trimmed.contains("承認待ち")
+        || trimmed.contains("承認が必要")
+        || trimmed.contains("要承認")
+        || lower.contains("awaiting approval")
+        || lower.contains("pending approval")
+        || lower.contains("needs approval")
+        || lower.contains("approval pending")
+        || lower.contains("waiting for approval")
+}
+
 pub fn looks_like_git_commit_window(title: &str, raw_text: &[String]) -> bool {
     let title_lower = title.to_lowercase();
     if title_lower.contains("提交更改")
@@ -772,6 +802,56 @@ mod tests {
             observed.request.command, None,
             "apply changes ダイアログでは command は抽出しない"
         );
+    }
+
+    #[test]
+    fn detects_pending_approval_badges_in_known_languages() {
+        for label in [
+            "等待批准",
+            "等待审批",
+            "待批准",
+            "承認待ち",
+            "承認が必要",
+            "要承認",
+            "Awaiting approval",
+            "Pending approval",
+            "PENDING APPROVAL",
+            "needs approval",
+            "Waiting for approval",
+            "approval pending",
+        ] {
+            assert!(
+                is_pending_approval_badge(label),
+                "should detect `{label}` as pending-approval badge"
+            );
+        }
+    }
+
+    #[test]
+    fn does_not_treat_long_text_as_badge() {
+        // ヘルプ文 / プロンプト本文中の偶然の一致を拾わないこと。
+        let long = "This action is awaiting approval because the policy currently \
+            requires manual confirmation for any command that writes outside the workspace.";
+        assert!(!is_pending_approval_badge(long));
+    }
+
+    #[test]
+    fn does_not_treat_unrelated_labels_as_badge() {
+        for label in [
+            "",
+            "  ",
+            "启动项目",
+            "main",
+            "1. 是",
+            "提交",
+            "Approve",
+            "Codex Desktop",
+        ] {
+            assert!(
+                !is_pending_approval_badge(label),
+                "should NOT detect `{label}` as pending-approval badge"
+            );
+        }
     }
 
     #[test]

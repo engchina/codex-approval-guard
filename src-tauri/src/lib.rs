@@ -1,6 +1,7 @@
 mod audit;
 mod platform;
 mod policy;
+mod update;
 
 use std::sync::Mutex;
 
@@ -241,6 +242,31 @@ where
     Ok(updated)
 }
 
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/c", "start", &url])
+            .spawn()
+            .map_err(|error| format!("URL を開けませんでした: {error}"))?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        #[cfg(target_os = "macos")]
+        std::process::Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        #[cfg(target_os = "linux")]
+        std::process::Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 pub fn run() {
     let _ = audit::get_app_start_time();
 
@@ -257,6 +283,8 @@ pub fn run() {
             set_guard_paused,
             set_allow_git_add,
             set_allow_git_commit,
+            update::check_for_app_update,
+            open_url,
         ])
         .run(tauri::generate_context!())
         .expect("Codex Approval Guard の起動に失敗しました");

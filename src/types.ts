@@ -86,3 +86,14 @@ export interface GuardState {
   recent_audits: AuditEntry[];
   audit_log_path: string;
 }
+
+export interface UpdateCheckResult {
+  currentVersion: string;
+  latestVersion: string;
+  hasUpdate: boolean;
+  releaseUrl: string;
+  downloadUrl?: string | null;
+  assetName?: string | null;
+  releaseNotes: string;
+  publishedAt?: string | null;
+}

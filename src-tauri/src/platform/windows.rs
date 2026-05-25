@@ -1,5 +1,5 @@
 use crate::policy::ApprovalRequest;
-use super::parser::{parse_observed_approval_with_context, looks_like_git_commit_window};
+use super::parser::{parse_observed_approval_with_context, looks_like_git_commit_window, is_pending_approval_badge};
 use super::ClickOutcome;
 use super::ObserveDiagnostics;
 use super::ObservedApproval;
@@ -290,17 +290,49 @@ fn click_yes_inner() -> Result<ClickOutcome, String> {
 
         let yes_candidates = collect_candidates(&raw_walker, window, matcher);
         log_candidates(&mut outcome, label, &yes_candidates);
-        let Some(yes_target) = pick_best(&yes_candidates) else {
-            let dump = dump_approval_tree(&raw_walker, window);
-            let dump_text = if dump.is_empty() {
-                "（承認関連要素なし）".to_string()
-            } else {
-                dump.join("\n")
-            };
-            return Err(format!(
-                "{}相当の要素が見つかりませんでした。Codex のダイアログが現在表示されていない可能性があります。\n\nUIA dump (承認関連 / interactive 要素):\n{}",
-                label, dump_text
-            ));
+        let yes_target = match pick_best(&yes_candidates) {
+            Some(target) => target,
+            None => {
+                // 承認ダイアログ本体（「1. 是」「Approve」等）が UI ツリーに無い場合、
+                // 非アクティブな会話がサイドバーで承認待ちになっている可能性がある。
+                // バッジを手掛かりにサイドバーの会話アイテムをアクティブ化し、
+                // 次回ポーリングで通常フローに合流させる。git commit ダイアログ側
+                // （is_git_commit）はサイドバーバッジを持たないため対象外。
+                if !is_git_commit {
+                    let sidebar_targets =
+                        collect_pending_approval_sidebar_targets(&raw_walker, window);
+                    log_candidates(&mut outcome, "「等待批准」バッジ", &sidebar_targets);
+                    if let Some(sidebar_target) = pick_best(&sidebar_targets) {
+                        let activate_method = invoke_candidate(sidebar_target, window).map_err(
+                            |error| {
+                                format!(
+                                    "サイドバーの承認待ち会話の自動アクティブ化に失敗しました: {error}"
+                                )
+                            },
+                        )?;
+                        outcome.notes.push(format!(
+                            "サイドバーの承認待ち会話をアクティブ化しました: type={:?} method={} name=\"{}\"。次回ポーリングで承認操作を試行します。",
+                            sidebar_target.control_type,
+                            activate_method,
+                            short(&sidebar_target.name, 60),
+                        ));
+                        // ここではダイアログ本体がまだ描画されていないため、
+                        // yes_invoked / submit_invoked は false のまま返す。
+                        // 次サイクルで `click_yes_inner` が再度呼ばれた時に通常フローが走る。
+                        return Ok(outcome);
+                    }
+                }
+                let dump = dump_approval_tree(&raw_walker, window);
+                let dump_text = if dump.is_empty() {
+                    "（承認関連要素なし）".to_string()
+                } else {
+                    dump.join("\n")
+                };
+                return Err(format!(
+                    "{}相当の要素が見つかりませんでした。Codex のダイアログが現在表示されていない可能性があります。\n\nUIA dump (承認関連 / interactive 要素):\n{}",
+                    label, dump_text
+                ));
+            }
         };
         let yes_method = invoke_candidate(yes_target, window)
             .map_err(|error| format!("{}の invoke に失敗しました: {}", label, error))?;
@@ -445,6 +477,81 @@ fn collect_candidates_recursive(
 
 fn pick_best(candidates: &[Candidate]) -> Option<&Candidate> {
     candidates.iter().max_by_key(|c| c.score())
+}
+
+/// サイドバーから「承認待ち」バッジを持つ会話アイテムを探し、
+/// クリック可能な祖先（ListItem / TabItem 等）を `Candidate` として返す。
+///
+/// バッジ自体（TextBlock）には Invoke パターンが無いことが多いため、
+/// 祖先方向に最も近い「Invoke もしくは Select 可能なコンテナ」を選ぶ。
+/// 見つからなければバッジ要素そのものを返す（最後の手段）。
+fn collect_pending_approval_sidebar_targets(
+    walker: &UITreeWalker,
+    window: &UIElement,
+) -> Vec<Candidate> {
+    let mut out = Vec::new();
+    collect_pending_approval_recursive(walker, window, 0, &mut Vec::new(), &mut out);
+    out
+}
+
+fn collect_pending_approval_recursive(
+    walker: &UITreeWalker,
+    element: &UIElement,
+    depth: usize,
+    ancestor_stack: &mut Vec<UIElement>,
+    out: &mut Vec<Candidate>,
+) {
+    if depth > MAX_CLICK_TREE_DEPTH || out.len() >= 10 {
+        return;
+    }
+
+    let name = safe_name(element);
+    if is_pending_approval_badge(&name) {
+        let target = pick_clickable_ancestor(ancestor_stack).unwrap_or_else(|| element.clone());
+        let candidate = Candidate {
+            name: safe_name(&target),
+            control_type: target.get_control_type().ok(),
+            has_invoke: target.get_pattern::<UIInvokePattern>().is_ok(),
+            has_select: target.get_pattern::<UISelectionItemPattern>().is_ok(),
+            has_legacy: target.get_pattern::<UILegacyIAccessiblePattern>().is_ok(),
+            element: target,
+        };
+        out.push(candidate);
+    }
+
+    ancestor_stack.push(element.clone());
+    if let Some(children) = walker.get_children(element) {
+        for child in children {
+            collect_pending_approval_recursive(walker, &child, depth + 1, ancestor_stack, out);
+        }
+    }
+    ancestor_stack.pop();
+}
+
+fn pick_clickable_ancestor(stack: &[UIElement]) -> Option<UIElement> {
+    for ancestor in stack.iter().rev() {
+        let control_type = ancestor.get_control_type().ok();
+        let is_clickable_container = matches!(
+            control_type,
+            Some(ControlType::ListItem)
+                | Some(ControlType::TabItem)
+                | Some(ControlType::TreeItem)
+                | Some(ControlType::Button)
+                | Some(ControlType::Hyperlink)
+                | Some(ControlType::DataItem)
+                | Some(ControlType::MenuItem)
+        );
+        if !is_clickable_container {
+            continue;
+        }
+        let has_invoke = ancestor.get_pattern::<UIInvokePattern>().is_ok();
+        let has_select = ancestor.get_pattern::<UISelectionItemPattern>().is_ok();
+        let has_legacy = ancestor.get_pattern::<UILegacyIAccessiblePattern>().is_ok();
+        if has_invoke || has_select || has_legacy {
+            return Some(ancestor.clone());
+        }
+    }
+    None
 }
 
 fn log_candidates(outcome: &mut ClickOutcome, label: &str, candidates: &[Candidate]) {
@@ -733,6 +840,10 @@ fn looks_like_approval_keyword(line: &str) -> bool {
         || line.contains("変更を適用")
         || line.contains("これらの変更")
         || line.contains("承認")
+        // サイドバーのバッジ（非アクティブ会話での承認待ち）も拾うため、
+        // バッジ文字列単体を keyword_hit のトリガに含める。判定本体は
+        // parser::is_pending_approval_badge と整合させる。
+        || super::parser::is_pending_approval_badge(line)
 }
 
 fn short(text: &str, max: usize) -> String {
@@ -989,5 +1100,19 @@ mod tests {
         assert!(is_submit_button("提交 ⏎"));
         assert!(is_submit_button("Submit Enter"));
         assert!(!is_submit_button("跳过 提交 ⏎"));
+    }
+
+    /// 非アクティブな会話のサイドバーに「等待批准」バッジしか出ていない
+    /// ケースでも、observe フェーズの keyword_hit が立つことを担保する。
+    /// これが false のままだと parse_window の早期 continue で観察結果が
+    /// 返らず、自動承認のトリガが掛からない。
+    #[test]
+    fn pending_approval_badge_triggers_keyword_hit() {
+        assert!(looks_like_approval_keyword("等待批准"));
+        assert!(looks_like_approval_keyword("Pending approval"));
+        assert!(looks_like_approval_keyword("承認待ち"));
+        // 無関係なサイドバーラベルは引っ掛けない。
+        assert!(!looks_like_approval_keyword("启动项目"));
+        assert!(!looks_like_approval_keyword("main"));
     }
 }

@@ -19,6 +19,7 @@ import type {
   AutoApproveOutcome,
   GuardState,
   PolicyConfig,
+  UpdateCheckResult,
 } from "./types";
 
 const actionLabels: Record<string, string> = {
@@ -47,6 +48,29 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
+
+  const checkUpdate = useCallback(async () => {
+    try {
+      const result = await callBackend<UpdateCheckResult>("check_for_app_update");
+      setUpdateResult(result);
+    } catch (err) {
+      console.error("Update check failed:", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    void checkUpdate();
+  }, [checkUpdate]);
+
+  const handleUpdateClick = async (url: string) => {
+    try {
+      await callBackend("open_url", { url });
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
 
   const copyLogPath = async () => {
     if (!state?.audit_log_path) return;
@@ -194,6 +218,22 @@ function App() {
             {policy?.paused ? "停止中" : "監視中"}
           </button>
         </header>
+
+        {updateResult?.hasUpdate && (
+          <div className="update-banner" role="status">
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <Activity size={14} className="pulse-icon" />
+              <span>新しいバージョン (v{updateResult.latestVersion}) が利用可能です。</span>
+            </div>
+            <button
+              type="button"
+              className="update-btn"
+              onClick={() => handleUpdateClick(updateResult.downloadUrl || updateResult.releaseUrl)}
+            >
+              アップデート
+            </button>
+          </div>
+        )}
 
         {/* Exceptions / git allow settings */}
         <section className="exceptions-section" aria-label="自動承認の例外設定">

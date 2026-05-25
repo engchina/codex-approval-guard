@@ -778,3 +778,41 @@ button:disabled {
   color: var(--color-text-muted);
   font-size: 11px;
 }
+
+/* Update Banner */
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  background-color: var(--color-success-bg);
+  border: 1px solid var(--color-success-border);
+  border-radius: 8px;
+  color: var(--color-success);
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+.update-banner span {
+  font-weight: 600;
+}
+
+.update-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background-color: var(--color-success);
+  color: #ffffff;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 10px;
+  box-shadow: var(--shadow-sm);
+  transition: background-color 0.2s ease;
+  cursor: pointer;
+}
+
+.update-btn:hover {
+  background-color: #059669;
+}
