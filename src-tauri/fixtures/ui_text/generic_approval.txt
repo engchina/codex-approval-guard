@@ -1,0 +1,5 @@
+Approval request
+VPN client wants to update security settings.
+Command: powershell Set-ExecutionPolicy RemoteSigned
+Yes
+No

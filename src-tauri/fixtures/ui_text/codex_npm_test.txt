@@ -1,0 +1,7 @@
+Codex approval request
+Run command
+Command: npm test
+Working directory: E:\workspace\codex-approval-guard
+This command wants permission to run in the current workspace.
+Approve
+Deny

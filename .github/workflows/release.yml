@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish-tauri:
+    name: Publish ${{ matrix.label }}
+    runs-on: ${{ matrix.platform }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64
+            platform: windows-latest
+            args: ""
+          - label: macOS universal
+            platform: macos-latest
+            args: "--target universal-apple-darwin --no-sign"
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install macOS universal Rust targets
+        if: matrix.label == 'macOS universal'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Validate release metadata
+        shell: bash
+        run: node scripts/validate-release.mjs "${GITHUB_REF_NAME#v}" --require-changelog
+
+      - name: Build release body from repository docs
+        id: release_notes
+        shell: bash
+        run: |
+          node scripts/build-release-body.mjs "${GITHUB_REF_NAME#v}" --require-changelog > release-body.md
+          delimiter="release-body-$(node -e "process.stdout.write(require('node:crypto').randomUUID())")"
+          {
+            printf 'body<<%s\n' "$delimiter"
+            cat release-body.md
+            printf '\n%s\n' "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build app and upload release assets
+        uses: tauri-apps/tauri-action@action-v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Codex Approval Guard ${{ github.ref_name }}"
+          releaseBody: ${{ steps.release_notes.outputs.body }}
+          generateReleaseNotes: true
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}

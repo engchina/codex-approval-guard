@@ -1,0 +1,8 @@
+OpenAI Codex
+承認が必要です
+コマンド: cargo test --workspace
+作業ディレクトリ: E:\workspace\codex-approval-guard
+Sandbox permission: workspace-write
+対象: E:\workspace\codex-approval-guard
+承認
+拒否

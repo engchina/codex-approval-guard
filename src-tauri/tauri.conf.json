@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Codex Approval Guard",
+  "version": "0.1.0",
+  "identifier": "com.engchina.codex-approval-guard",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://127.0.0.1:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Codex Approval Guard",
+        "width": 440,
+        "height": 600,
+        "minWidth": 400,
+        "minHeight": 520,
+        "maxWidth": 550,
+        "maxHeight": 700
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.ico"]
+  }
+}

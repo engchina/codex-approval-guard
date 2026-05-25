@@ -1,0 +1,35 @@
+{
+  "name": "codex-approval-guard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420",
+    "build": "tsc && vite build",
+    "cargo:check": "node scripts/with-crates-proxy.mjs --cwd src-tauri cargo check",
+    "cargo:test": "node scripts/with-crates-proxy.mjs --cwd src-tauri cargo test",
+    "preview": "vite preview --host 127.0.0.1",
+    "tauri": "tauri",
+    "tauri:build": "node scripts/build-tauri.mjs",
+    "tauri:build:windows": "node scripts/with-crates-proxy.mjs npm run tauri -- build --bundles nsis",
+    "tauri:build:mac": "node scripts/with-crates-proxy.mjs npm run tauri -- build --bundles app,dmg",
+    "tauri:dev": "node scripts/with-crates-proxy.mjs npm run tauri -- dev",
+    "release:prepare": "node scripts/prepare-release.mjs",
+    "release:validate": "node scripts/validate-release.mjs",
+    "release:notes:preview": "node scripts/build-release-body.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.0",
+    "lucide-react": "^1.16.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.13"
+  }
+}

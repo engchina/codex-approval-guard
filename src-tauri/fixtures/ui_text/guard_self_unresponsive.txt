@@ -1,0 +1,6 @@
+Codex Approval Guard (未响应)
+Scoped approval assistant
+Windows read-only observer
+観察する
+サンプル保存
+Raw UI Automation text
