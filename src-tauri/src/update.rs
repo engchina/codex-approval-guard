@@ -268,12 +268,14 @@ fn architecture_match_score(name: &str, architecture: UpdateArchitecture) -> Opt
             }
         }
         UpdateArchitecture::AArch64 => {
-            if mentions_x86_64 || mentions_x86 {
-                None
-            } else if mentions_arm64 {
-                Some(2)
+            if mentions_arm64 {
+                Some(3)
+            } else if mentions_x86_64 {
+                Some(2) // x64 emulation fallback
+            } else if mentions_x86 {
+                Some(1) // x86 emulation fallback
             } else {
-                Some(1)
+                Some(2) // generic/universal
             }
         }
         UpdateArchitecture::X86 => {
@@ -377,6 +379,22 @@ mod tests {
             selected.name,
             "CodexApprovalGuard_0.1.2_macos_universal.dmg"
         );
+    }
+
+    #[test]
+    fn aarch64_falls_back_to_x64_if_no_arm64() {
+        let assets = vec![
+            asset(
+                "CodexApprovalGuard_0.1.2_windows_x64.exe",
+                "https://example.com/x64.exe",
+            ),
+        ];
+
+        let selected =
+            select_best_asset(&assets, UpdatePlatform::Windows, UpdateArchitecture::AArch64)
+                .expect("expected a fallback installer");
+
+        assert_eq!(selected.name, "CodexApprovalGuard_0.1.2_windows_x64.exe");
     }
 
     #[test]

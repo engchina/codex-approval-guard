@@ -59,6 +59,10 @@ pub fn click_yes_in_codex_approval() -> Result<ClickOutcome, String> {
     run_uia_task(click_yes_inner)
 }
 
+pub fn click_no_in_codex_approval() -> Result<ClickOutcome, String> {
+    run_uia_task(click_no_inner)
+}
+
 /// 直近のユーザー入力（キーボード/マウス）から現在までの経過ミリ秒。
 /// 取得に失敗した場合は 0 を返し「直前まで操作していた」とみなす（安全側）。
 pub fn user_idle_ms() -> u32 {
@@ -244,6 +248,109 @@ fn parse_window(
 
 const MAX_CLICK_TREE_DEPTH: usize = 60;
 const MAX_DUMP_ENTRIES: usize = 80;
+
+fn click_no_inner() -> Result<ClickOutcome, String> {
+    let automation = UIAutomation::new().map_err(|error| error.to_string())?;
+    let control_walker = automation
+        .get_control_view_walker()
+        .map_err(|error| error.to_string())?;
+    let raw_walker = automation
+        .get_raw_view_walker()
+        .map_err(|error| error.to_string())?;
+    let root = automation
+        .get_root_element()
+        .map_err(|error| error.to_string())?;
+    let Some(windows) = control_walker.get_children(&root) else {
+        return Err("Top-level walker から子要素を取得できません。".to_string());
+    };
+
+    let mut outcome = ClickOutcome::default();
+
+    for window in windows.iter().take(MAX_TOP_LEVEL_WINDOWS) {
+        let candidate = window_candidate(window);
+        if candidate.should_skip() || !candidate.looks_like_codex_process() {
+            continue;
+        }
+
+        outcome.target_window = candidate.title.clone();
+        outcome.notes.push(format!(
+            "ターゲット: title=\"{}\" process={}",
+            short(&candidate.title, 60),
+            candidate.process_name.as_deref().unwrap_or("?"),
+        ));
+
+        // Collect raw text to determine if it is a git commit window
+        let mut raw_text = Vec::new();
+        let mut keyword_hit = false;
+        collect_text(&raw_walker, window, 0, &mut raw_text, &mut keyword_hit);
+
+        let is_git_commit = looks_like_git_commit_window(&candidate.title, &raw_text);
+
+        let (matcher, label) = if is_git_commit {
+            (is_close_or_cancel_button as fn(&str) -> bool, "「关闭/取消」")
+        } else {
+            (is_first_no_option as fn(&str) -> bool, "「3. 否」")
+        };
+
+        let no_candidates = collect_candidates(&raw_walker, window, matcher);
+        log_candidates(&mut outcome, label, &no_candidates);
+        let no_target = match pick_best(&no_candidates) {
+            Some(target) => target,
+            None => {
+                let dump = dump_approval_tree(&raw_walker, window);
+                let dump_text = if dump.is_empty() {
+                    "（承認関連要素なし）".to_string()
+                } else {
+                    dump.join("\n")
+                };
+                return Err(format!(
+                    "{}相当の要素が見つかりませんでした。Codex のダイアログが現在表示されていない可能性があります。\n\nUIA dump (承認関連 / interactive 要素):\n{}",
+                    label, dump_text
+                ));
+            }
+        };
+        let no_method = invoke_candidate(no_target, window)
+            .map_err(|error| format!("{}の invoke に失敗しました: {}", label, error))?;
+        outcome.notes.push(format!(
+            "{}invoke: type={:?} method={}",
+            label, no_target.control_type, no_method
+        ));
+        outcome.yes_invoked = true;
+
+        if is_git_commit {
+            outcome.notes.push("Git 提交ダイアログのため「提交」処理をスキップします。".to_string());
+            return Ok(outcome);
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(150));
+
+        let submit_candidates = collect_candidates(&raw_walker, window, is_submit_button);
+        log_candidates(&mut outcome, "「提交」", &submit_candidates);
+        match pick_best(&submit_candidates) {
+            Some(submit_target) => {
+                let submit_method = invoke_candidate(submit_target, window).map_err(|error| {
+                    format!(
+                        "「3. 否」は選択しましたが、「提交」の invoke に失敗しました: {error}。手動で送信してください。"
+                    )
+                })?;
+                outcome.notes.push(format!(
+                    "「提交」invoke: type={:?} method={}",
+                    submit_target.control_type, submit_method
+                ));
+                outcome.submit_invoked = true;
+            }
+            None => {
+                outcome.notes.push(
+                    "「提交」ボタンが見つかりませんでした（既に送信された可能性）。".to_string(),
+                );
+            }
+        }
+
+        return Ok(outcome);
+    }
+
+    Err("Codex プロセスのウィンドウが見つかりませんでした。".to_string())
+}
 
 fn click_yes_inner() -> Result<ClickOutcome, String> {
     let automation = UIAutomation::new().map_err(|error| error.to_string())?;
@@ -667,50 +774,45 @@ fn ensure_window_active(window: &UIElement) {
     }
 }
 
-// TODO(parser-strict): 以下の `click_element_background` 関数はコンパイルエラーが残っているため
-// 一時的にコメントアウト中。修復ポイント:
-//   - `element.get_clickable_point()` の戻り値は `Result<Option<Point>, _>` のため Option 展開が必要
-//   - `ScreenToClient` は `windows_sys::Win32::Graphics::Gdi` 配下
-// 修復後は呼び出し側（invoke_candidate 内）も合わせて有効化する。
-//
-// fn click_element_background(element: &UIElement) -> Result<(), String> {
-//     let handle = element.get_native_window_handle()
-//         .map_err(|error| format!("ウィンドウハンドル取得失敗: {error}"))?;
-//     let hwnd_win: windows::Win32::Foundation::HWND = handle.into();
-//     let hwnd_raw = hwnd_win.0 as windows_sys::Win32::Foundation::HWND;
-//     if hwnd_raw.is_null() {
-//         return Err("HWND が NULL です。".to_string());
-//     }
-//
-//     let pt = element.get_clickable_point()
-//         .map_err(|error| format!("Clickable point 取得失敗: {error}"))?;
-//
-//     let mut client_pt = windows_sys::Win32::Foundation::POINT { x: pt.x, y: pt.y };
-//     unsafe {
-//         if windows_sys::Win32::UI::WindowsAndMessaging::ScreenToClient(hwnd_raw, &mut client_pt) == 0 {
-//             return Err("ScreenToClient 変換に失敗しました。".to_string());
-//         }
-//     }
-//
-//     let l_param = ((client_pt.y as u32) << 16) | ((client_pt.x as u32) & 0xFFFF);
-//     unsafe {
-//         windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
-//             hwnd_raw,
-//             windows_sys::Win32::UI::WindowsAndMessaging::WM_LBUTTONDOWN,
-//             1, // MK_LBUTTON
-//             l_param as isize,
-//         );
-//         std::thread::sleep(Duration::from_millis(50));
-//         windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
-//             hwnd_raw,
-//             windows_sys::Win32::UI::WindowsAndMessaging::WM_LBUTTONUP,
-//             0,
-//             l_param as isize,
-//         );
-//     }
-//
-//     Ok(())
-// }
+fn click_element_background(element: &UIElement) -> Result<(), String> {
+    let handle = element.get_native_window_handle()
+        .map_err(|error| format!("ウィンドウハンドル取得失敗: {error}"))?;
+    let hwnd_win: windows::Win32::Foundation::HWND = handle.into();
+    let hwnd_raw = hwnd_win.0 as windows_sys::Win32::Foundation::HWND;
+    if hwnd_raw.is_null() {
+        return Err("HWND が NULL です。".to_string());
+    }
+
+    let pt = element.get_clickable_point()
+        .map_err(|error| format!("Clickable point 取得失敗: {error}"))?
+        .ok_or_else(|| "Clickable point が取得できませんでした。".to_string())?;
+
+    let mut client_pt = windows_sys::Win32::Foundation::POINT { x: pt.get_x(), y: pt.get_y() };
+    unsafe {
+        if windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd_raw, &mut client_pt) == 0 {
+            return Err("ScreenToClient 変換に失敗しました。".to_string());
+        }
+    }
+
+    let l_param = ((client_pt.y as u32) << 16) | ((client_pt.x as u32) & 0xFFFF);
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
+            hwnd_raw,
+            windows_sys::Win32::UI::WindowsAndMessaging::WM_LBUTTONDOWN,
+            1, // MK_LBUTTON
+            l_param as isize,
+        );
+        std::thread::sleep(Duration::from_millis(50));
+        windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
+            hwnd_raw,
+            windows_sys::Win32::UI::WindowsAndMessaging::WM_LBUTTONUP,
+            0,
+            l_param as isize,
+        );
+    }
+
+    Ok(())
+}
 
 fn invoke_candidate(candidate: &Candidate, parent_window: &UIElement) -> Result<&'static str, String> {
     if candidate.has_invoke {
@@ -737,15 +839,15 @@ fn invoke_candidate(candidate: &Candidate, parent_window: &UIElement) -> Result<
         }
     }
 
-    // UIA パターン（InvokePattern / SelectionItemPattern / LegacyIAccessiblePattern）が
-    // いずれも成功しなかった場合、物理マウスクリックへのフォールバックは行わない。
-    // 物理クリックはユーザーの作業中にカーソルを奪ってしまうため、
-    // 自動操作はあきらめてユーザーに手動操作を委ねる。
-    // 抑制した parent_window は不要なので明示的に drop してリンタ警告を回避する。
+    // UIA パターンが失敗した場合、PostMessage によるバックグラウンドクリックを試行
+    if let Ok(()) = click_element_background(&candidate.element) {
+        return Ok("background-click");
+    }
+
+    // 物理クリックフォールバックは無効化されているため、UIA / BackgroundClick 共に失敗した場合は手動操作を委ねる
     let _ = parent_window;
     Err(
-        "UIA パターンによる自動操作が利用できませんでした。手動で承認してください。\
-         （マウス移動を伴う物理クリックフォールバックは無効化されています）"
+        "UIA パターンおよびバックグラウンドクリックによる自動操作が利用できませんでした。手動で操作してください。"
             .to_string(),
     )
 }
@@ -807,6 +909,42 @@ fn looks_like_primary_approval_option(name: &str) -> bool {
         || lower.contains("approve")
         || lower.contains("yes")
         || lower.contains("allow")
+}
+
+fn is_first_no_option(name: &str) -> bool {
+    let trimmed = name.trim();
+    if is_standalone_primary_rejection_label(trimmed) {
+        return true;
+    }
+
+    let starts_with_three = trimmed.starts_with("3.")
+        || trimmed.starts_with("3、")
+        || trimmed.starts_with("3。")
+        || trimmed.starts_with("3)")
+        || trimmed.starts_with("3 .");
+
+    starts_with_three && looks_like_primary_rejection_option(trimmed)
+}
+
+fn is_standalone_primary_rejection_label(label: &str) -> bool {
+    let lower = label.to_lowercase();
+    matches!(label, "否" | "拒否" | "拒绝" | "いいえ")
+        || lower == "no"
+        || lower == "deny"
+        || lower == "decline"
+        || lower == "reject"
+}
+
+fn looks_like_primary_rejection_option(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    name.contains("否")
+        || name.contains("拒否")
+        || name.contains("拒绝")
+        || name.contains("いいえ")
+        || lower.contains("deny")
+        || lower.contains("no")
+        || lower.contains("decline")
+        || lower.contains("reject")
 }
 
 fn is_submit_button(name: &str) -> bool {
@@ -1062,6 +1200,16 @@ mod tests {
         assert!(is_first_yes_option("是"));
         assert!(is_first_yes_option("Yes"));
         assert!(is_first_yes_option("Approve"));
+    }
+
+    #[test]
+    fn matches_numbered_and_accessibility_stripped_no_option() {
+        assert!(is_first_no_option("3. 否"));
+        assert!(is_first_no_option("3。否"));
+        assert!(is_first_no_option("否"));
+        assert!(is_first_no_option("No"));
+        assert!(is_first_no_option("Decline"));
+        assert!(is_first_no_option("3. 否，请告知 Codex 如何調整"));
     }
 
     #[test]

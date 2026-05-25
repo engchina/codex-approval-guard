@@ -50,6 +50,16 @@ function App() {
   const [copied, setCopied] = useState(false);
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
 
+  interface LastAction {
+    action: string;
+    risk: string;
+    matched_rule?: string | null;
+    target: string;
+    time: number;
+  }
+  const [lastAction, setLastAction] = useState<LastAction | null>(null);
+  const [lastActionShowUntil, setLastActionShowUntil] = useState<number>(0);
+
   const checkUpdate = useCallback(async () => {
     try {
       const result = await callBackend<UpdateCheckResult>("check_for_app_update");
@@ -62,6 +72,19 @@ function App() {
   useEffect(() => {
     void checkUpdate();
   }, [checkUpdate]);
+
+  useEffect(() => {
+    if (lastActionShowUntil === 0) return;
+    const delay = lastActionShowUntil - Date.now();
+    if (delay <= 0) {
+      setLastActionShowUntil(0);
+      return;
+    }
+    const id = window.setTimeout(() => {
+      setLastActionShowUntil(0);
+    }, delay);
+    return () => window.clearTimeout(id);
+  }, [lastActionShowUntil]);
 
   const handleUpdateClick = async (url: string) => {
     try {
@@ -156,7 +179,7 @@ function App() {
         const inCooldown =
           !manual && Date.now() - lastApprovalAtRef.current < AUTO_APPROVE_COOLDOWN_MS;
         const autoAction = result.decision?.action;
-        const shouldAutoAct = autoAction === "approve" || autoAction === "dismiss";
+        const shouldAutoAct = autoAction === "approve" || autoAction === "dismiss" || autoAction === "deny";
         if (shouldAutoAct && result.observed && !inCooldown) {
           try {
             const auto = await callBackend<AutoApproveOutcome>("auto_approve_observed_request", {
@@ -164,6 +187,14 @@ function App() {
             });
             setAutoApprove(auto);
             lastApprovalAtRef.current = Date.now();
+            setLastAction({
+              action: auto.decision.action,
+              risk: auto.decision.risk,
+              matched_rule: auto.decision.matched_rule,
+              target: result.observed.request.command || result.observed.request.window_title,
+              time: Date.now(),
+            });
+            setLastActionShowUntil(Date.now() + 5000);
           } catch (autoErr) {
             // Background errors don't block
           }
@@ -197,6 +228,15 @@ function App() {
       second: "2-digit",
       hour12: false,
     });
+  };
+  const showPersistentAction = lastAction && Date.now() < lastActionShowUntil;
+
+  const getCardClass = () => {
+    if (policy?.paused) return "paused";
+    if (showPersistentAction) {
+      return lastAction.action === "deny" ? "deny" : "alert";
+    }
+    return observation?.observed ? "alert" : "monitoring";
   };
 
   return (
@@ -269,7 +309,7 @@ function App() {
         ) : null}
 
         {/* Dynamic Status Card */}
-        <section className={`status-card ${policy?.paused ? "paused" : observation?.observed ? "alert" : "monitoring"}`}>
+        <section className={`status-card ${getCardClass()}`}>
           {policy?.paused ? (
             <div className="card-content paused">
               <AlertTriangle size={32} className="status-icon" />
@@ -278,10 +318,47 @@ function App() {
                 <p>Codex からの承認リクエストは自動承認されません。</p>
               </div>
             </div>
+          ) : showPersistentAction && lastAction ? (
+            <div className="card-content active-event">
+              <div className="event-header">
+                {lastAction.action === "deny" ? (
+                  <span className="event-badge deny">自動拒否済</span>
+                ) : lastAction.action === "dismiss" ? (
+                  <span className="event-badge dismiss">自動閉鎖済</span>
+                ) : (
+                  <span className="event-badge approve">自動承認済</span>
+                )}
+                <span className="event-time">直近の自動操作</span>
+              </div>
+              <div className="event-details">
+                <div className="event-field">
+                  <span className="label">対象操作</span>
+                  <strong className="value" title={lastAction.target}>
+                    {lastAction.target}
+                  </strong>
+                </div>
+                <div className="event-field-row">
+                  <div>
+                    <span className="label">判定</span>
+                    <span className="value-decision" style={{ color: lastAction.action === "deny" ? "var(--color-danger)" : "var(--color-success)" }}>
+                      {actionLabels[lastAction.action]} ({riskLabels[lastAction.risk]})
+                    </span>
+                  </div>
+                  {lastAction.matched_rule && (
+                    <div>
+                      <span className="label">適用ルール</span>
+                      <span className="value-rule">{lastAction.matched_rule}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
           ) : observation?.observed ? (
             <div className="card-content active-event">
               <div className="event-header">
-                {observation.decision?.action === "dismiss" ? (
+                {observation.decision?.action === "deny" ? (
+                  <span className="event-badge deny">自動拒否済</span>
+                ) : observation.decision?.action === "dismiss" ? (
                   <span className="event-badge dismiss">自動閉鎖済</span>
                 ) : (
                   <span className="event-badge approve">自動承認済</span>
@@ -298,7 +375,7 @@ function App() {
                 <div className="event-field-row">
                   <div>
                     <span className="label">判定</span>
-                    <span className="value-decision">
+                    <span className="value-decision" style={{ color: observation.decision?.action === "deny" ? "var(--color-danger)" : "var(--color-success)" }}>
                       {observation.decision ? actionLabels[observation.decision.action] : "未判定"}
                       {observation.decision && ` (${riskLabels[observation.decision.risk]})`}
                     </span>

@@ -54,6 +54,11 @@ pub fn click_yes_in_codex_approval() -> Result<ClickOutcome, String> {
 }
 
 #[cfg(target_os = "windows")]
+pub fn click_no_in_codex_approval() -> Result<ClickOutcome, String> {
+    windows::click_no_in_codex_approval()
+}
+
+#[cfg(target_os = "windows")]
 pub fn user_idle_ms() -> u32 {
     windows::user_idle_ms()
 }
@@ -72,6 +77,11 @@ pub fn observe_approval_request() -> Result<(Option<ObservedApproval>, ObserveDi
 #[cfg(target_os = "macos")]
 pub fn click_yes_in_codex_approval() -> Result<ClickOutcome, String> {
     Err("macOS では自動承認は未対応です。".to_string())
+}
+
+#[cfg(target_os = "macos")]
+pub fn click_no_in_codex_approval() -> Result<ClickOutcome, String> {
+    Err("macOS では自動拒否は未対応です。".to_string())
 }
 
 #[cfg(target_os = "macos")]

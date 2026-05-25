@@ -632,7 +632,7 @@ button:disabled {
   display: flex;
   gap: 12px;
   padding: 8px 12px;
-  background-color: #ffffff;
+  background-color: var(--color-card-bg);
   border: 1px solid var(--color-border);
   border-left: 3px solid var(--color-border);
   border-radius: 10px;
@@ -675,7 +675,7 @@ button:disabled {
   font-weight: 600;
   color: var(--color-text-muted);
   border: 1px solid var(--color-border);
-  background-color: #ffffff;
+  background-color: var(--color-card-bg);
   padding: 3px 8px;
   border-radius: 6px;
   transition: all 0.2s ease;
@@ -815,4 +815,84 @@ button:disabled {
 
 .update-btn:hover {
   background-color: #059669;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #0b0f19;
+    --color-text-main: #f1f5f9;
+    --color-text-muted: #94a3b8;
+    --color-border: #1e293b;
+
+    --color-success: #10b981;
+    --color-success-bg: #064e3b;
+    --color-success-border: #047857;
+
+    --color-warning: #fbbf24;
+    --color-warning-bg: #78350f;
+    --color-warning-border: #b45309;
+
+    --color-danger: #f87171;
+    --color-danger-bg: #7f1d1d;
+    --color-danger-border: #b91c1c;
+
+    --color-card-bg: #111827;
+    --color-muted-bg: #1f2937;
+
+    --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.5);
+    --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.6), 0 2px 6px -1px rgba(0, 0, 0, 0.3);
+  }
+
+  body {
+    background-color: var(--color-bg);
+    color: var(--color-text-main);
+  }
+
+  .status-card.monitoring {
+    background: linear-gradient(135deg, var(--color-card-bg) 0%, #062f1c 100%);
+  }
+
+  .status-card.alert {
+    background: linear-gradient(135deg, var(--color-card-bg) 0%, #064e3b 100%);
+  }
+
+  .status-card.paused {
+    background: linear-gradient(135deg, var(--color-card-bg) 0%, #451a03 100%);
+  }
+
+  .switch-row:hover {
+    background-color: rgba(255, 255, 255, 0.02);
+  }
+
+  .switch-track {
+    background-color: #475569;
+  }
+
+  .switch-state-label.off {
+    color: var(--color-text-muted);
+    background-color: var(--color-muted-bg);
+  }
+
+  .event-badge.dismiss {
+    background-color: #1e293b;
+    color: #94a3b8;
+    border: 1px solid #334155;
+  }
+
+  .value-code {
+    background-color: var(--color-muted-bg);
+    color: #e2e8f0;
+    border: 1px solid rgba(255, 255, 255, 0.03);
+  }
+
+  .item-action-badge.dismiss {
+    background-color: #1e293b;
+    color: #e2e8f0;
+  }
+
+  .copy-path-btn:hover {
+    background-color: var(--color-muted-bg);
+    color: var(--color-text-main);
+    border-color: #475569;
+  }
 }

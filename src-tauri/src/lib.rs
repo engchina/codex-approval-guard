@@ -177,19 +177,31 @@ async fn auto_approve_observed_request(
 
     let decision = policy_snapshot.evaluate(&request);
     let is_dismiss = decision.action == DecisionAction::Dismiss;
-    if decision.action != DecisionAction::Approve && !is_dismiss {
+    let is_deny = decision.action == DecisionAction::Deny;
+    if decision.action != DecisionAction::Approve && !is_dismiss && !is_deny {
         return Err(format!(
-            "policy 判定が approve/dismiss ではありません ({:?})。自動操作を中止しました。",
+            "policy 判定が approve/dismiss/deny ではありません ({:?})。自動操作を中止しました。",
             decision.action
         ));
     }
 
-    let click = async_runtime::spawn_blocking(platform::click_yes_in_codex_approval)
-        .await
-        .map_err(|error| format!("自動操作の実行に失敗しました: {error}"))??;
+    let click = if is_deny {
+        async_runtime::spawn_blocking(platform::click_no_in_codex_approval)
+            .await
+            .map_err(|error| format!("自動操作の実行に失敗しました: {error}"))??
+    } else {
+        async_runtime::spawn_blocking(platform::click_yes_in_codex_approval)
+            .await
+            .map_err(|error| format!("自動操作の実行に失敗しました: {error}"))??
+    };
 
     let mut audit_decision = decision.clone();
-    audit_decision.reason = if is_dismiss {
+    audit_decision.reason = if is_deny {
+        format!(
+            "{}（auto-denied: no={}, submit={}）",
+            audit_decision.reason, click.yes_invoked, click.submit_invoked
+        )
+    } else if is_dismiss {
         format!(
             "{}（auto-dismissed: close={}）",
             audit_decision.reason, click.yes_invoked
