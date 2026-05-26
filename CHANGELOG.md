@@ -20,6 +20,25 @@
 
 <!-- リファクタ、ツール、テスト、リリースプロセスなど、プロジェクト履歴に残したい保守作業。 -->
 
+## 0.1.6 - 2026-05-26
+
+### Added
+
+- 自動操作結果に成功経路を表す `method` ラベルを保持できるように `ClickOutcome` を拡張。
+- Codex の ask_user_question 系プロンプトで、番号付きの「（推荐）/（推奨）/(Recommended)」選択肢を自動承認候補として扱うように追加。
+- 日本語版 Codex Desktop の「これらの変更を行いますか?」形式の変更適用プロンプトを検出できるように追加。
+
+### Changed
+
+- 監査ログの reason には冗長な notes 全文ではなく、成功した自動操作経路を表す短い `method` のみを記録するように変更。
+- WebView 内蔵 dialog の Escape 閉鎖経路を `AttachThreadInput`、`SendInput`、HWND broadcast の複数経路で試し、成功した経路を `method` に記録するように改善。
+- ask_user_question 系プロンプトの送信ボタンとして「继续 / Continue / 継続」を扱うように改善。
+
+### Internal
+
+- `ClickOutcome.method` に serde default を付与し、既存の結果 payload との互換性を維持。
+- 推奨選択肢 matcher、submit matcher、日本語変更適用 fixture のテスト期待値を追加。
+
 ## 0.1.5 - 2026-05-26
 
 ### Added

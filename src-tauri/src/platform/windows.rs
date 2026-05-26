@@ -378,6 +378,9 @@ fn click_no_inner(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
             label, no_target.control_type, no_method
         ));
         outcome.yes_invoked = true;
+        outcome.method = Some(
+            if is_git_commit { "uia-close-button" } else { "uia-no-button" }.to_string(),
+        );
 
         if is_git_commit {
             outcome.notes.push("Git 提交ダイアログのため「提交」処理をスキップします。".to_string());
@@ -488,7 +491,7 @@ fn click_yes_inner(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
         let (matcher, label, type_filter): ClickTargetMatch = if is_git_commit {
             (is_close_or_cancel_button, "「关闭/取消」", Some(is_close_button_type))
         } else {
-            (is_first_yes_option, "「1. 是」", None)
+            (is_first_yes_or_recommended_option, "「1. 是 / N. (推荐)」", None)
         };
 
         let yes_candidates = collect_candidates_with_filter(&raw_walker, window, matcher, type_filter);
@@ -544,6 +547,16 @@ fn click_yes_inner(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
             label, yes_target.control_type, yes_method
         ));
         outcome.yes_invoked = true;
+        outcome.method = Some(
+            if is_git_commit {
+                "uia-close-button"
+            } else if is_recommended_option(&yes_target.name) {
+                "uia-recommended-option"
+            } else {
+                "uia-yes-button"
+            }
+            .to_string(),
+        );
 
         if is_git_commit {
             outcome.notes.push("Git 提交ダイアログのため「提交」処理をスキップします。".to_string());
@@ -924,16 +937,133 @@ extern "system" fn collect_child_hwnds(
     }
 }
 
-/// WebView 内蔵 modal の git commit dialog に対し、`VK_ESCAPE` を PostMessage で
-/// 送信して閉じる（次に速い経路）。
+/// VK_ESCAPE を「シングル INPUT」として組み立てる小ヘルパ。
+fn make_esc_input(flags: u32) -> windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT {
+    let mut input: windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT =
+        unsafe { std::mem::zeroed() };
+    input.r#type = windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT_KEYBOARD;
+    input.Anonymous.ki =
+        windows_sys::Win32::UI::Input::KeyboardAndMouse::KEYBDINPUT {
+            wVk: 0x1B, // VK_ESCAPE
+            wScan: 0,
+            dwFlags: flags,
+            time: 0,
+            dwExtraInfo: 0,
+        };
+    input
+}
+
+/// `AttachThreadInput` トリックで他プロセスのウィンドウを強制的にフォアグラウンドに
+/// 持ち上げる。Windows のフォアグラウンド権限制限を一時的にバイパスする標準的な手法。
+/// 戻り値: SetForegroundWindow が 0 以外を返したか。
+fn force_set_foreground(hwnd_raw: windows_sys::Win32::Foundation::HWND) -> bool {
+    if hwnd_raw.is_null() {
+        return false;
+    }
+    let prev_fg =
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
+    let fg_tid = if !prev_fg.is_null() {
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
+                prev_fg,
+                std::ptr::null_mut(),
+            )
+        }
+    } else {
+        0
+    };
+    let my_tid = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
+    let attached = if fg_tid != 0 && fg_tid != my_tid {
+        unsafe {
+            windows_sys::Win32::System::Threading::AttachThreadInput(my_tid, fg_tid, 1) != 0
+        }
+    } else {
+        false
+    };
+    let set_ok =
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd_raw) };
+    if attached {
+        unsafe {
+            windows_sys::Win32::System::Threading::AttachThreadInput(my_tid, fg_tid, 0);
+        }
+    }
+    set_ok != 0
+}
+
+/// `SendInput` で実 OS 入力として VK_ESCAPE を流し込む。Chromium はハードウェア入力を
+/// 信頼するため、合成 PostMessage より遥かに確実に dialog の Escape ハンドラへ届く。
 ///
-/// WebView2 (Chromium) は合成キーボード入力を多くのケースで無視するため、
-/// 単純な PostMessageW では届かない。そこで以下のいずれかが成功するまで段階的に試す。
+/// Codex が既にフォアグラウンドであればそのまま送るだけ。バックグラウンドの場合は
+/// `AttachThreadInput` トリックで一時的に Codex を前面に持ち上げてから VK_ESCAPE を
+/// 送信し、終わったら元のフォアグラウンドウィンドウへフォーカスを戻す（ユーザー体感は
+/// 30〜50ms の Codex 一瞬表示）。
+fn try_send_input_escape(
+    hwnd_raw: windows_sys::Win32::Foundation::HWND,
+    outcome: &mut ClickOutcome,
+) -> bool {
+    if hwnd_raw.is_null() {
+        return false;
+    }
+    let prev_fg =
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
+    let already_fg = prev_fg == hwnd_raw;
+
+    if !already_fg {
+        if !force_set_foreground(hwnd_raw) {
+            outcome.notes.push(
+                "SendInput 経路: 強制フォアグラウンド化に失敗（権限制限の可能性）。".to_string(),
+            );
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+
+    let inputs = [
+        make_esc_input(0),
+        make_esc_input(windows_sys::Win32::UI::Input::KeyboardAndMouse::KEYEVENTF_KEYUP),
+    ];
+    let sent = unsafe {
+        windows_sys::Win32::UI::Input::KeyboardAndMouse::SendInput(
+            2,
+            inputs.as_ptr(),
+            std::mem::size_of::<windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT>() as i32,
+        )
+    };
+    let success = sent == 2;
+
+    // 元のフォアグラウンドを復帰（自分が前面化していた場合のみ）。
+    if !already_fg && !prev_fg.is_null() {
+        std::thread::sleep(Duration::from_millis(10));
+        force_set_foreground(prev_fg);
+    }
+
+    if success {
+        outcome.notes.push(format!(
+            "SendInput 経路: VK_ESCAPE x2 を送信成功（force_fg={}）。",
+            !already_fg
+        ));
+        true
+    } else {
+        outcome.notes.push(format!(
+            "SendInput 経路: SendInput が {} 個しか送れませんでした。",
+            sent
+        ));
+        false
+    }
+}
+
+/// WebView 内蔵 modal の git commit dialog に対し、`VK_ESCAPE` を複数経路で投入する。
 ///
-/// 1. `AttachThreadInput` で Codex のスレッドへ入力キューを連結 → `GetFocus()` で
-///    Codex 側の現在のフォーカス HWND を取得 → そこへ PostMessage（最も精度が高い）。
-/// 2. 上が取れなかった場合は、Codex 親 HWND + `EnumChildWindows` で得た子孫 HWND 全部に
-///    ブロードキャスト（フォールバック）。
+/// WebView2 (Chromium) は合成キーボード入力を環境やタイミングによって取りこぼすため、
+/// 単一経路では確実に届かない。ここでは以下を順に試し、成功したものを `method` に
+/// 連結して記録する（一つでも成功すれば dialog は閉じる想定）。
+///
+/// 1. `AttachThreadInput` で Codex スレッドへ入力キューを連結 → `GetFocus()` で
+///    Codex 側のフォーカス HWND を取得 → そこへ PostMessage（精度高、副作用なし）。
+/// 2. Codex がフォアグラウンドにある場合のみ `SendInput` で実ハードウェア入力として
+///    VK_ESCAPE を送信（最も確実、フォーカス奪取なし）。
+/// 3. 親 HWND + `EnumChildWindows` で得た子孫 HWND に PostMessage をブロードキャスト
+///    （最後の保険、副作用は小さい）。
 fn try_send_escape_to_window(window: &UIElement, outcome: &mut ClickOutcome) -> bool {
     let handle = match window.get_native_window_handle() {
         Ok(handle) => handle,
@@ -953,7 +1083,41 @@ fn try_send_escape_to_window(window: &UIElement, outcome: &mut ClickOutcome) -> 
         return false;
     }
 
-    // ステップ1: AttachThreadInput で Codex のフォーカス先 HWND を取得して送信。
+    let mut succeeded: Vec<&'static str> = Vec::new();
+
+    // 経路1: AttachThreadInput → Codex 側 GetFocus → 該当 HWND に PostMessage。
+    if try_post_escape_via_attached_focus(hwnd_raw, outcome) {
+        succeeded.push("attach-focus");
+    }
+
+    // 経路2: SendInput でハードウェア入力として VK_ESCAPE を送信。Chromium は合成
+    // PostMessage を取りこぼすが、SendInput はほぼ確実に届く。Codex が非フォアグラウンドの
+    // 場合は AttachThreadInput トリックで一時的に前面化してから送り、終了後にフォーカスを
+    // 復帰させる（ユーザー体感は短い Codex フラッシュ）。
+    if try_send_input_escape(hwnd_raw, outcome) {
+        succeeded.push("sendinput");
+    }
+
+    // 経路3: 親+子 HWND に PostMessage をブロードキャスト（最後の保険）。
+    if try_post_escape_broadcast(hwnd_raw, outcome) {
+        succeeded.push("broadcast");
+    }
+
+    if succeeded.is_empty() {
+        outcome
+            .notes
+            .push("Escape 経路: 全経路失敗。UIA 経路へフォールバック。".to_string());
+        return false;
+    }
+    outcome.method = Some(format!("escape-multi[{}]", succeeded.join("+")));
+    true
+}
+
+/// Escape 経路1: AttachThreadInput → GetFocus → PostMessage。失敗時 false。
+fn try_post_escape_via_attached_focus(
+    hwnd_raw: windows_sys::Win32::Foundation::HWND,
+    outcome: &mut ClickOutcome,
+) -> bool {
     let codex_tid = unsafe {
         windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
             hwnd_raw,
@@ -961,52 +1125,68 @@ fn try_send_escape_to_window(window: &UIElement, outcome: &mut ClickOutcome) -> 
         )
     };
     let my_tid = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
-    let mut focused_raw: windows_sys::Win32::Foundation::HWND = std::ptr::null_mut();
-    let mut attached = false;
-    if codex_tid != 0 && codex_tid != my_tid {
-        let ok = unsafe {
-            windows_sys::Win32::System::Threading::AttachThreadInput(my_tid, codex_tid, 1)
-        };
-        if ok != 0 {
-            attached = true;
-            focused_raw =
-                unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetFocus() };
-        }
+    if codex_tid == 0 || codex_tid == my_tid {
+        outcome.notes.push(
+            "AttachThreadInput 経路: TID 取得不可 / 自スレッドのためスキップ。".to_string(),
+        );
+        return false;
     }
-    if attached {
-        unsafe {
-            windows_sys::Win32::System::Threading::AttachThreadInput(my_tid, codex_tid, 0);
-        }
+    let attached = unsafe {
+        windows_sys::Win32::System::Threading::AttachThreadInput(my_tid, codex_tid, 1)
+    };
+    if attached == 0 {
+        outcome
+            .notes
+            .push("AttachThreadInput 経路: AttachThreadInput 失敗。".to_string());
+        return false;
     }
+    let focused_raw =
+        unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetFocus() };
+    unsafe {
+        windows_sys::Win32::System::Threading::AttachThreadInput(my_tid, codex_tid, 0);
+    }
+    if focused_raw.is_null() {
+        outcome
+            .notes
+            .push("AttachThreadInput 経路: GetFocus が NULL。".to_string());
+        return false;
+    }
+    let ok_down = unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
+            focused_raw,
+            windows_sys::Win32::UI::WindowsAndMessaging::WM_KEYDOWN,
+            VK_ESCAPE_RAW,
+            ESC_LPARAM_DOWN,
+        )
+    };
+    let ok_up = unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
+            focused_raw,
+            windows_sys::Win32::UI::WindowsAndMessaging::WM_KEYUP,
+            VK_ESCAPE_RAW,
+            ESC_LPARAM_UP,
+        )
+    };
+    if ok_down != 0 && ok_up != 0 {
+        outcome.notes.push(format!(
+            "AttachThreadInput 経路: focused HWND={:p} に VK_ESCAPE 送信成功。",
+            focused_raw
+        ));
+        true
+    } else {
+        outcome.notes.push(format!(
+            "AttachThreadInput 経路: PostMessage 失敗 (down={}, up={})。",
+            ok_down, ok_up
+        ));
+        false
+    }
+}
 
-    if !focused_raw.is_null() {
-        let ok_down = unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
-                focused_raw,
-                windows_sys::Win32::UI::WindowsAndMessaging::WM_KEYDOWN,
-                VK_ESCAPE_RAW,
-                ESC_LPARAM_DOWN,
-            )
-        };
-        let ok_up = unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
-                focused_raw,
-                windows_sys::Win32::UI::WindowsAndMessaging::WM_KEYUP,
-                VK_ESCAPE_RAW,
-                ESC_LPARAM_UP,
-            )
-        };
-        if ok_down != 0 && ok_up != 0 {
-            outcome.notes.push(format!(
-                "Escape 経路: AttachThreadInput → GetFocus HWND={:p} に VK_ESCAPE 送信（fast-path）。",
-                focused_raw
-            ));
-            return true;
-        }
-    }
-
-    // ステップ2: フォーカス先が取得できない／PostMessage 失敗時は、親+子孫の全 HWND に
-    // ブロードキャストする（最後の保険、効きにくいが副作用は小さい）。
+/// Escape 経路3: 親 + 子孫 HWND 全部にブロードキャスト。
+fn try_post_escape_broadcast(
+    hwnd_raw: windows_sys::Win32::Foundation::HWND,
+    outcome: &mut ClickOutcome,
+) -> bool {
     let mut targets: Vec<windows_sys::Win32::Foundation::HWND> = vec![hwnd_raw];
     unsafe {
         windows_sys::Win32::UI::WindowsAndMessaging::EnumChildWindows(
@@ -1040,11 +1220,11 @@ fn try_send_escape_to_window(window: &UIElement, outcome: &mut ClickOutcome) -> 
     if posted == 0 {
         outcome
             .notes
-            .push("Escape 経路: AttachThreadInput/Broadcast いずれも失敗。UIA 経路へフォールバック。".to_string());
+            .push("Broadcast 経路: いずれの HWND にも PostMessage が届きませんでした。".to_string());
         return false;
     }
     outcome.notes.push(format!(
-        "Escape 経路: AttachThreadInput でフォーカス取得不可。親+子 HWND {} 個へブロードキャスト送信（fallback）。",
+        "Broadcast 経路: {} 個の HWND に VK_ESCAPE PostMessage 送信。",
         posted
     ));
     true
@@ -1089,6 +1269,7 @@ fn try_close_window_via_wm_close(window: &UIElement, outcome: &mut ClickOutcome)
     outcome
         .notes
         .push("WM_CLOSE 経路: dialog HWND に WM_CLOSE を送信しました（fast-path）。".to_string());
+    outcome.method = Some("wm-close".to_string());
     true
 }
 
@@ -1229,6 +1410,43 @@ fn looks_like_primary_approval_option(name: &str) -> bool {
         || lower.contains("allow")
 }
 
+/// Codex の ask_user_question 系プロンプトでは「（推荐）」「（推奨）」「(Recommended)」
+/// マーカー付きの選択肢が出る（番号は 1〜N のどれでも可）。Guard はそのマーカー付きの
+/// 番号付き選択肢を最優先で選んでクリックする。
+///
+/// 偶発的なマッチ（例: 否系選択肢の説明文に「推荐」が含まれる）を避けるため、
+/// マーカーは必ずカッコで囲まれていることを要件とする。さらに 1〜9 の番号プレフィックスを
+/// 必須とする。
+fn is_recommended_option(name: &str) -> bool {
+    let trimmed = name.trim();
+    let lower = trimmed.to_lowercase();
+    let has_marker = trimmed.contains("（推荐）")
+        || trimmed.contains("(推荐)")
+        || trimmed.contains("（推奨）")
+        || trimmed.contains("(推奨)")
+        || trimmed.contains("（おすすめ）")
+        || trimmed.contains("(おすすめ)")
+        || lower.contains("(recommended)")
+        || lower.contains("（recommended）");
+    if !has_marker {
+        return false;
+    }
+    // 番号プレフィックス必須（1〜9 の半角／全角バリアント）。
+    let numbered_prefixes = [
+        "1.", "2.", "3.", "4.", "5.", "6.", "7.", "8.", "9.", "1、", "2、", "3、", "4、", "5、",
+        "6、", "7、", "8、", "9、", "1。", "2。", "3。", "4。", "5。", "6。", "7。", "8。", "9。",
+        "1)", "2)", "3)", "4)", "5)", "6)", "7)", "8)", "9)", "1 .", "2 .", "3 .", "4 .", "5 .",
+    ];
+    numbered_prefixes.iter().any(|p| trimmed.starts_with(p))
+}
+
+/// click_yes_inner で使う組み合わせ matcher。「1. 是」相当 もしくは「番号付き (推荐) 選択肢」
+/// のいずれかにマッチ。両者が同時に存在する Codex プロンプトは観測されないため、UIA 候補が
+/// 一意に絞られる前提。
+fn is_first_yes_or_recommended_option(name: &str) -> bool {
+    is_first_yes_option(name) || is_recommended_option(name)
+}
+
 fn is_first_no_option(name: &str) -> bool {
     let trimmed = name.trim();
     if is_standalone_primary_rejection_label(trimmed) {
@@ -1272,10 +1490,29 @@ fn is_submit_button(name: &str) -> bool {
         || trimmed.starts_with("提交 ")
         || trimmed == "送信"
         || trimmed.starts_with("送信 ")
+        // 日本語版 Codex Desktop の実際の表記は「送信する」(screenshot 確認済み)。
+        || trimmed == "送信する"
+        || trimmed.starts_with("送信する ")
         || trimmed == "確認"
         || trimmed.starts_with("確認 ")
+        || trimmed == "確認する"
+        || trimmed.starts_with("確認する ")
+        // ask_user_question 系プロンプトの送信ボタン。
+        // - 中国語: 「继续」
+        // - 日本語: 「続行」(zokkou, Codex Desktop の実際の表記) / 「継続」(keizoku, 念のため)
+        // - 英語: "Continue"
+        // git commit dialog にも「继续」が現れるが、click_yes_inner では git_commit 分岐で
+        // 早期 return するため、ここに加えても誤動作しない。
+        || trimmed == "继续"
+        || trimmed.starts_with("继续 ")
+        || trimmed == "続行"
+        || trimmed.starts_with("続行 ")
+        || trimmed == "継続"
+        || trimmed.starts_with("継続 ")
         || lower == "submit"
         || lower.starts_with("submit ")
+        || lower == "continue"
+        || lower.starts_with("continue ")
         || lower == "ok"
         || lower.starts_with("ok ")
 }
@@ -1296,6 +1533,13 @@ fn looks_like_approval_keyword(line: &str) -> bool {
         || line.contains("変更を適用")
         || line.contains("これらの変更")
         || line.contains("承認")
+        // Codex の ask_user_question 系プロンプトでは「（推荐）/（推奨）/(Recommended)」
+        // マーカー付きの選択肢が出る。これは承認候補と見なせるため keyword_hit のトリガに含める。
+        || line.contains("（推荐）")
+        || line.contains("(推荐)")
+        || line.contains("（推奨）")
+        || line.contains("(推奨)")
+        || lower.contains("(recommended)")
         // サイドバーのバッジ（非アクティブ会話での承認待ち）も拾うため、
         // バッジ文字列単体を keyword_hit のトリガに含める。判定本体は
         // parser::is_pending_approval_badge と整合させる。
@@ -1571,6 +1815,53 @@ mod tests {
         assert!(is_submit_button("提交 ⏎"));
         assert!(is_submit_button("Submit Enter"));
         assert!(!is_submit_button("跳过 提交 ⏎"));
+        // ask_user_question 系の「继续 / Continue / 続行 / 継続」も submit と見なす。
+        // 日本語版 Codex Desktop の実際の送信ボタン文字列は「続行」(zokkou)。
+        assert!(is_submit_button("继续"));
+        assert!(is_submit_button("继续 ⏎"));
+        assert!(is_submit_button("Continue"));
+        assert!(is_submit_button("続行"));
+        assert!(is_submit_button("続行 ⏎"));
+        assert!(is_submit_button("継続"));
+        // 日本語版 apply-changes ダイアログでは「送信する / 確認する」の表記が出る
+        // (screenshot 確認済み)。末尾の Enter マーカー付きも含めて submit と扱う。
+        assert!(is_submit_button("送信する"));
+        assert!(is_submit_button("送信する ⏎"));
+        assert!(is_submit_button("確認する"));
+        assert!(is_submit_button("確認する ⏎"));
+    }
+
+    #[test]
+    fn matches_recommended_option_with_parens_marker() {
+        // 番号付き + カッコ内マーカーの組み合わせは推奨選択肢として扱う。
+        assert!(is_recommended_option("1. 先改 AWS RAG（推荐）"));
+        assert!(is_recommended_option("2. オプション（推奨）"));
+        assert!(is_recommended_option("3. オプション（おすすめ）"));
+        assert!(is_recommended_option("1. Option A (Recommended)"));
+        assert!(is_recommended_option("4. choice (recommended)"));
+    }
+
+    #[test]
+    fn does_not_match_unmarked_or_freestyle_recommended_text() {
+        // 番号プレフィックスなし → false（dialog 本文に偶発的に出る「推荐」を拾わない）。
+        assert!(!is_recommended_option("（推荐）先改 AWS RAG"));
+        assert!(!is_recommended_option("推荐: 先改 AWS RAG"));
+        // カッコなし → false（rejection 選択肢の説明文に「推荐」を含むケース等を弾く）。
+        assert!(!is_recommended_option("3. 否，请告知 Codex 推荐什么"));
+        // マーカーなし → false。
+        assert!(!is_recommended_option("1. 是"));
+        assert!(!is_recommended_option("2. 全仓库本地化"));
+    }
+
+    #[test]
+    fn combined_yes_or_recommended_matcher_covers_both_cases() {
+        // 既存の「1. 是」も推奨選択肢も同じ matcher で拾えるようにする。
+        assert!(is_first_yes_or_recommended_option("1. 是"));
+        assert!(is_first_yes_or_recommended_option("1. 先改 AWS RAG（推荐）"));
+        assert!(is_first_yes_or_recommended_option("2. オプション（推奨）"));
+        // 否定系・無関係は引っ掛けない。
+        assert!(!is_first_yes_or_recommended_option("3. 否"));
+        assert!(!is_first_yes_or_recommended_option("2. 全仓库本地化"));
     }
 
     /// 非アクティブな会話のサイドバーに「等待批准」バッジしか出ていない

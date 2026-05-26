@@ -170,6 +170,13 @@ fn looks_like_approval_text(title: &str, raw_text: &[String]) -> bool {
         || text.contains("sandbox")
         || text.contains("permission")
         || text.contains("許可")
+        // 「（推荐）/（推奨）/(recommended)」マーカーは Codex の ask_user_question 系
+        // 多選プロンプトでのみ使用されるため、これも承認候補と見なす。
+        || text.contains("（推荐）")
+        || text.contains("(推荐)")
+        || text.contains("（推奨）")
+        || text.contains("(推奨)")
+        || text.contains("(recommended)")
 }
 
 fn extract_command(raw_text: &[String]) -> Option<String> {
@@ -234,6 +241,10 @@ fn is_apply_changes_prompt(raw_text: &[String]) -> bool {
             || line.contains("应用这些改动")
             || line.contains("変更を適用")
             || line.contains("これらの変更を適用")
+            // 日本語版 Codex Desktop の実際の表記。screenshot 確認済み:
+            // 「これらの変更を行いますか?」。
+            || line.contains("これらの変更を行")
+            || line.contains("変更を行いますか")
     })
 }
 
@@ -348,6 +359,8 @@ fn locate_prompt_window(raw_text: &[String]) -> Option<&[String]> {
             || line.contains("是否运行")
             || line.contains("是否应用")
             || line.contains("変更を適用")
+            || line.contains("これらの変更")
+            || line.contains("変更を行いますか")
     })?;
     let start = index.saturating_sub(SPAN);
     let end = (index + SPAN + 1).min(raw_text.len());
@@ -759,6 +772,29 @@ mod tests {
             .request
             .target_paths
             .contains(&"index.ts".to_string()));
+    }
+
+    #[test]
+    fn parses_codex_desktop_japanese_apply_changes_fixture() {
+        let observed = parse_observed_approval_with_context(
+            "RAG 開発計画の策定",
+            fixture_lines(include_str!(
+                "../../fixtures/ui_text/codex_desktop_japanese_apply_changes.txt"
+            )),
+            "fixture",
+            true,
+        )
+        .expect("fixture should parse");
+
+        assert_eq!(observed.request.command, None);
+        assert_eq!(
+            observed.request.requested_permission.as_deref(),
+            Some("file")
+        );
+        assert!(observed
+            .request
+            .target_paths
+            .contains(&"windows.rs".to_string()));
     }
 
     #[test]

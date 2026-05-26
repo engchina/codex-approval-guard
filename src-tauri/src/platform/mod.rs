@@ -28,6 +28,12 @@ pub struct ClickOutcome {
     pub target_window: String,
     pub yes_invoked: bool,
     pub submit_invoked: bool,
+    /// 実際に成功した自動操作の経路ラベル（例: "wm-close", "escape-attach",
+    /// "escape-broadcast", "uia-close-button", "uia-yes-button", "uia-no-button"）。
+    /// audit log の reason 末尾に短い形で付加され、原因追跡を容易にする。
+    /// `notes` は冗長な診断ログのため audit には載せず、メモリ上のみで保持する。
+    #[serde(default)]
+    pub method: Option<String>,
     pub notes: Vec<String>,
 }
 

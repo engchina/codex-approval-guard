@@ -41,7 +41,7 @@ flowchart TD
   - Dismiss: git commit ダイアログを閉じます。独立 HWND の場合は `WM_CLOSE` を送信し、WebView 内蔵 modal の場合は Escape キー（`VK_ESCAPE`）イベントを親・子 HWND に送信、失敗時は UIA の「关闭/取消」クリックへとフォールバックします。
 - 緊急停止（paused = true）の間は自動操作を行わず、policy 判定は `prompt` を返します。
 - macOS Accessibility adapter はまだ未接続です。
-- 監査ログは自動操作（承認・拒否・閉鎖）の実行時に JSONL で追記保存し、機微情報に見える語句（token, secret, password, credential）は記録前に redaction します。
+- 監査ログは自動操作（承認・拒否・閉鎖）の実行時に JSONL で追記保存します。理由（reason）には、成功した自動操作の経路（method。例：`wm-close`, `escape-multi[attach-focus+sendinput+broadcast]`, `uia-recommended-option`, `uia-yes-button`, `uia-no-button`, `uia-close-button`）が追跡用に記録されます。また、機微情報に見える語句（token, secret, password, credential）は記録前に redaction します。
 
 ## Parser fixture
 

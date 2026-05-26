@@ -203,34 +203,28 @@ async fn auto_approve_observed_request(
     };
 
     let mut audit_decision = decision.clone();
-    // 自動操作の trace を notes として保存し、原因追跡を容易にする。
-    let notes_trace = if click.notes.is_empty() {
-        String::new()
-    } else {
-        format!(" notes=[{}]", click.notes.join(" | "))
-    };
+    // 経路追跡のため method 識別子のみ短く付加する。詳細な notes は ClickOutcome 上に
+    // メモリ保持されるが audit log には載せない（過去版で notes 全文を残した結果、
+    // reason が肥大化したため）。
+    let method_trace = click
+        .method
+        .as_deref()
+        .map(|m| format!(", method={m}"))
+        .unwrap_or_default();
     audit_decision.reason = if is_deny {
         format!(
-            "{}（auto-denied: no={}, submit={}, target=\"{}\"{}）",
-            audit_decision.reason,
-            click.yes_invoked,
-            click.submit_invoked,
-            click.target_window,
-            notes_trace
+            "{}（auto-denied: no={}, submit={}{}）",
+            audit_decision.reason, click.yes_invoked, click.submit_invoked, method_trace
         )
     } else if is_dismiss {
         format!(
-            "{}（auto-dismissed: close={}, target=\"{}\"{}）",
-            audit_decision.reason, click.yes_invoked, click.target_window, notes_trace
+            "{}（auto-dismissed: close={}{}）",
+            audit_decision.reason, click.yes_invoked, method_trace
         )
     } else {
         format!(
-            "{}（auto-approved: yes={}, submit={}, target=\"{}\"{}）",
-            audit_decision.reason,
-            click.yes_invoked,
-            click.submit_invoked,
-            click.target_window,
-            notes_trace
+            "{}（auto-approved: yes={}, submit={}{}）",
+            audit_decision.reason, click.yes_invoked, click.submit_invoked, method_trace
         )
     };
     state.audit.append(&request, &audit_decision)?;
