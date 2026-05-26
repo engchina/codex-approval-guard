@@ -1,6 +1,6 @@
 [package]
 name = "codex-approval-guard"
-version = "0.1.7"
+version = "0.1.8"
 description = "Scoped Codex approval assistant"
 authors = ["engchina"]
 edition = "2021"
@@ -26,3 +26,18 @@ semver = "1"
 uiautomation = "0.24.4"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi"] }
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# macOS Accessibility API への FFI。AXUIElement / AXObserver / kAX* 定数を提供。
+accessibility-sys = "0.1"
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+# Objective-C ランタイム経由で NSWorkspace.runningApplications を取得し、Codex bundle identifier
+# を持つプロセスを列挙する。AXUIElementCreateApplication(pid) と組み合わせて AX ツリーへ橋渡し。
+objc2 = "0.6"
+# `NSEnumerator` を有効化しないと `NSArray::iter()` が消える。runningApplications を
+# for ループで回すために必須。NSArray / NSString は objc2-app-kit の NSWorkspace /
+# NSRunningApplication により transitive に有効化されるが、NSEnumerator は誰も入れて
+# くれないので明示する。
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSEnumerator", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSRunningApplication", "libc"] }

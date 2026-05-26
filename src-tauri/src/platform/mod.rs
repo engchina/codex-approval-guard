@@ -1,5 +1,6 @@
 use crate::policy::ApprovalRequest;
 
+mod matchers;
 mod parser;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -77,20 +78,20 @@ pub fn snapshot_active_window() -> PlatformSnapshot {
 #[cfg(target_os = "macos")]
 pub fn observe_approval_request() -> Result<(Option<ObservedApproval>, ObserveDiagnostics), String>
 {
-    Ok((None, ObserveDiagnostics::default()))
+    macos::observe_approval_request()
 }
 
 #[cfg(target_os = "macos")]
-pub fn click_yes_in_codex_approval(_is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
-    Err("macOS では自動承認は未対応です。".to_string())
+pub fn click_yes_in_codex_approval(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
+    macos::click_yes_in_codex_approval(is_git_commit_hint)
 }
 
 #[cfg(target_os = "macos")]
-pub fn click_no_in_codex_approval(_is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
-    Err("macOS では自動拒否は未対応です。".to_string())
+pub fn click_no_in_codex_approval(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
+    macos::click_no_in_codex_approval(is_git_commit_hint)
 }
 
 #[cfg(target_os = "macos")]
 pub fn user_idle_ms() -> u32 {
-    u32::MAX
+    macos::user_idle_ms()
 }

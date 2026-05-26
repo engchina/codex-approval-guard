@@ -20,6 +20,22 @@
 
 <!-- リファクタ、ツール、テスト、リリースプロセスなど、プロジェクト履歴に残したい保守作業。 -->
 
+## 0.1.8 - 2026-05-26
+
+### Added
+
+- macOS 対応の本実装。`accessibility-sys` / `core-foundation` / `objc2-app-kit` を用いて Codex Desktop プロセスを `NSWorkspace.runningApplications` から列挙し、AX ツリーを再帰走査して承認ダイアログ・サイドバーの「承認が必要」バッジを検出する。`AXPress` で「1. はい / 3. いいえ / 閉じる / 送信」ボタンを押下、`AXRaise` でサイドバー会話をアクティブ化する。`CGEventSourceSecondsSinceLastEventType` で user_idle を取得して Windows 版と同じ 1500ms ガードを適用する。Windows 版と同等の餓死対策（メイン操作成功後のサイドバー pending 自動アクティブ化）も搭載済み。アクセシビリティ権限が必要。
+
+### Fixed
+
+- アクティブ会話が短い間隔で承認を生成し続ける状況（例: `git status` を秒間隔で実行）で、他プロジェクトのサイドバー「承認が必要」会話が永続的に処理されない餓死（starvation）を修正。アクティブ会話のメイン操作（承認/拒否どちらも）成功後に、追加でサイドバーの pending 会話を 1 件アクティブ化し、次回ポーリングで処理されるようにした。`click_yes` / `click_no` 両系統で対称に動作する。
+- macOS AX バックエンドで、非文字列の AX 属性値を CFString として扱う可能性と、可視ラベルが `AXStaticText` 子要素に分離されているボタンを直接押せない可能性を修正。AX 属性の type id を確認し、文字列候補は最近傍のクリック可能な祖先要素へ引き上げて `AXPress` / `AXRaise` する。
+- macOS の git commit dialog 閉鎖で、観測フェーズの hint だけを根拠に通常の Codex メインウィンドウを閉じる可能性を修正。クリック対象ウィンドウ自体の title / AX 本文が commit dialog と判定できる場合のみ閉鎖操作を行い、内蔵 modal 判定時はネイティブウィンドウの close button 候補を除外する。
+
+### Internal
+
+- プラットフォーム非依存の文字列マッチャー（`is_first_yes_option` / `is_first_no_option` / `is_recommended_option` / `is_submit_button` / `is_close_or_cancel_button` / `looks_like_approval_keyword` 等）を `platform/matchers.rs` に集約。Windows / macOS 両バックエンドから同一実装を参照することで挙動の乖離を防ぐ。
+
 ## 0.1.7 - 2026-05-26
 
 ### Added
