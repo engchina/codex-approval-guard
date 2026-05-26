@@ -23,9 +23,9 @@ flowchart TD
   C --> D{"paused?"}
   D -->|yes| P["prompt（自動操作・監査記録なし）"]
   D -->|no| E{"DecisionAction"}
-  E -->|approve| G["Approve (1. 是 + 提交クリック + 監査記録)"]
-  E -->|deny| H["Deny (3. 否 + 提交クリック + 監査記録)"]
-  E -->|dismiss| I["Dismiss (WM_CLOSE / VK_ESCAPE / UIA 关闭 + 監査記録)"]
+  E -->|approve| G["Approve (1. はい/是 + 送信/提交クリック + 監査記録)"]
+  E -->|deny| H["Deny (3. いいえ/否 + 送信/提交クリック + 監査記録)"]
+  E -->|dismiss| I["Dismiss (WM_CLOSE / VK_ESCAPE / UIA 閉じる/关闭 + 監査記録)"]
   E -->|prompt| P
 ```
 
@@ -36,9 +36,9 @@ flowchart TD
 - Parser は `Codex` を含まない approval / yes-no dialog を無視します。
 - ボタン文言だけでは承認しません（UI Automation の承認文脈検出を必須とします）。
 - Windows observer は UI Automation で承認文脈を検出し、paused でなければ判定（Approve / Deny / Dismiss）に応じて自動操作を実行します。
-  - Approve: 「1. 是」と「提交」ボタンを順に Invoke/クリックします。
-  - Deny: 「3. 否」と「提交」ボタンを順に Invoke/クリックします。
-  - Dismiss: git commit ダイアログを閉じます。独立 HWND の場合は `WM_CLOSE` を送信し、WebView 内蔵 modal の場合は Escape キー（`VK_ESCAPE`）イベントを親・子 HWND に送信、失敗時は UIA の「关闭/取消」クリックへとフォールバックします。
+  - Approve: 「1. はい/是」と「送信/提交」ボタンを順に Invoke/クリックします。
+  - Deny: 「3. いいえ/否」と「送信/提交」ボタンを順に Invoke/クリックします。
+  - Dismiss: git commit ダイアログを閉じます。独立 HWND の場合は `WM_CLOSE` を送信し、WebView 内蔵 modal の場合は Escape キー（`VK_ESCAPE`）イベントを親・子 HWND に送信、失敗時は UIA の「閉じる/キャンセル(关闭/取消)」クリックへとフォールバックします。
 - 緊急停止（paused = true）の間は自動操作を行わず、policy 判定は `prompt` を返します。
 - macOS Accessibility adapter はまだ未接続です。
 - 監査ログは自動操作（承認・拒否・閉鎖）の実行時に JSONL で追記保存します。理由（reason）には、成功した自動操作の経路（method。例：`wm-close`, `escape-multi[attach-focus+sendinput+broadcast]`, `uia-recommended-option`, `uia-yes-button`, `uia-no-button`, `uia-close-button`）が追跡用に記録されます。また、機微情報に見える語句（token, secret, password, credential）は記録前に redaction します。

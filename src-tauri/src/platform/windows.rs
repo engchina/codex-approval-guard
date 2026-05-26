@@ -204,7 +204,7 @@ fn parse_window(
     diagnostics: &mut ObserveDiagnostics,
 ) -> Option<ObservedApproval> {
     // タイトルだけで git commit dialog と判定できる場合、UI ツリー全走査を省略する。
-    // 独立 HWND の dialog では title が直接 "提交更改" 等になり、collect_text を呼ばずに
+    // 独立 HWND の dialog では title が直接 "変更をコミット"（または "提交更改"）等になり、collect_text を呼ばずに
     // 即座に承認候補を返せるため、観測〜自動操作までのレイテンシを大幅に短縮できる。
     if title_matches_git_commit(title) {
         diagnostics.notes.push(format!(
@@ -241,7 +241,7 @@ fn parse_window(
 
         // Git commit window check（タイトル不一致だが本文に含まれるケース。
         // この場合 dialog は WebView 内蔵 modal のため WM_CLOSE は使えない。
-        // 通常の UIA 「关闭/取消」ボタン点击に委ねる）。
+        // 通常の UIA 「閉じる/キャンセル」ボタンのクリックに委ねる）。
         if looks_like_git_commit_window(title, &raw_text) {
             let prompt_text = raw_text.join("\n");
             return Some(ObservedApproval {
@@ -260,7 +260,7 @@ fn parse_window(
             });
         }
 
-        // 真正に审批弹窗が存在する場合のみ強キーワードが現れる。
+        // 本当に承認ダイアログが存在する場合のみ強キーワードが現れる。
         // 単なる Codex メインウィンドウ（説明文に "approve" / "permission" などが
         // 散在する）を誤検出しないよう、ここで弾く。
         if !keyword_hit {
@@ -337,8 +337,8 @@ fn click_no_inner(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
         }
 
         // WebView 内蔵 modal の git commit dialog は VK_ESCAPE で閉じられる（次に速い経路）。
-        // Codex Desktop の commit dialog には UIA 上「关闭/✕」を持つボタンが存在せず、
-        // UIA 検索すると無関係な「跳过」等を誤クリックする事故が発生したため、
+        // Codex Desktop の commit dialog には UIA 上「閉じる/✕」を持つボタンが存在せず、
+        // UIA 検索すると無関係な「スキップ」等を誤クリックする事故が発生したため、
         // ユーザーが手動で確認した Escape キー経路を優先する。
         if is_git_commit
             && !title_says_git_commit
@@ -349,9 +349,9 @@ fn click_no_inner(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
         }
 
         let (matcher, label, type_filter): ClickTargetMatch = if is_git_commit {
-            (is_close_or_cancel_button, "「关闭/取消」", Some(is_close_button_type))
+            (is_close_or_cancel_button, "「閉じる/キャンセル」", Some(is_close_button_type))
         } else {
-            (is_first_no_option, "「3. 否」", None)
+            (is_first_no_option, "「3. いいえ」", None)
         };
 
         let no_candidates = collect_candidates_with_filter(&raw_walker, window, matcher, type_filter);
@@ -383,19 +383,24 @@ fn click_no_inner(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
         );
 
         if is_git_commit {
-            outcome.notes.push("Git 提交ダイアログのため「提交」処理をスキップします。".to_string());
+            outcome.notes.push("Git コミットダイアログのため「送信」処理をスキップします。".to_string());
             return Ok(outcome);
         }
 
-        std::thread::sleep(std::time::Duration::from_millis(150));
-
-        let submit_candidates = collect_candidates(&raw_walker, window, is_submit_button);
-        log_candidates(&mut outcome, "「提交」", &submit_candidates);
+        let mut submit_candidates = Vec::new();
+        for _i in 0..3 {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            submit_candidates = collect_candidates(&raw_walker, window, is_submit_button);
+            if !submit_candidates.is_empty() {
+                break;
+            }
+        }
+        log_candidates(&mut outcome, "「送信」", &submit_candidates);
         match pick_best(&submit_candidates) {
             Some(submit_target) => {
                 let submit_method = invoke_candidate(submit_target, window).map_err(|error| {
                     format!(
-                        "「3. 否」は選択しましたが、「提交」の invoke に失敗しました: {error}。手動で送信してください。"
+                        "「3. いいえ」は選択しましたが、「送信」の invoke に失敗しました: {error}。手動で送信してください。"
                     )
                 })?;
                 outcome.notes.push(format!(
@@ -477,7 +482,7 @@ fn click_yes_inner(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
         }
 
         // WebView 内蔵 modal の git commit dialog は VK_ESCAPE で閉じられる（次に速い経路）。
-        // Codex Desktop の commit dialog には UIA 上「关闭/✕」を持つボタンが存在せず、
+        // Codex Desktop の commit dialog には UIA 上「閉じる/✕」を持つボタンが存在せず、
         // UIA 検索すると無関係な「跳过」等を誤クリックする事故が発生したため、
         // ユーザーが手動で確認した Escape キー経路を優先する。
         if is_git_commit
@@ -489,9 +494,9 @@ fn click_yes_inner(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
         }
 
         let (matcher, label, type_filter): ClickTargetMatch = if is_git_commit {
-            (is_close_or_cancel_button, "「关闭/取消」", Some(is_close_button_type))
+            (is_close_or_cancel_button, "「閉じる/キャンセル」", Some(is_close_button_type))
         } else {
-            (is_first_yes_or_recommended_option, "「1. 是 / N. (推荐)」", None)
+            (is_first_yes_or_recommended_option, "「1. はい / N. (推奨)」", None)
         };
 
         let yes_candidates = collect_candidates_with_filter(&raw_walker, window, matcher, type_filter);
@@ -499,7 +504,7 @@ fn click_yes_inner(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
         let yes_target = match pick_best(&yes_candidates) {
             Some(target) => target,
             None => {
-                // 承認ダイアログ本体（「1. 是」「Approve」等）が UI ツリーに無い場合、
+                // 承認ダイアログ本体（「1. はい」「Approve」等）が UI ツリーに無い場合、
                 // 非アクティブな会話がサイドバーで承認待ちになっている可能性がある。
                 // バッジを手掛かりにサイドバーの会話アイテムをアクティブ化し、
                 // 次回ポーリングで通常フローに合流させる。git commit ダイアログ側
@@ -507,7 +512,7 @@ fn click_yes_inner(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
                 if !is_git_commit {
                     let sidebar_targets =
                         collect_pending_approval_sidebar_targets(&raw_walker, window);
-                    log_candidates(&mut outcome, "「等待批准」バッジ", &sidebar_targets);
+                    log_candidates(&mut outcome, "「承認待ち」バッジ", &sidebar_targets);
                     if let Some(sidebar_target) = pick_best(&sidebar_targets) {
                         let activate_method = invoke_candidate(sidebar_target, window).map_err(
                             |error| {
@@ -559,19 +564,24 @@ fn click_yes_inner(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
         );
 
         if is_git_commit {
-            outcome.notes.push("Git 提交ダイアログのため「提交」処理をスキップします。".to_string());
+            outcome.notes.push("Git コミットダイアログのため「送信」処理をスキップします。".to_string());
             return Ok(outcome);
         }
 
-        std::thread::sleep(std::time::Duration::from_millis(150));
-
-        let submit_candidates = collect_candidates(&raw_walker, window, is_submit_button);
-        log_candidates(&mut outcome, "「提交」", &submit_candidates);
+        let mut submit_candidates = Vec::new();
+        for _i in 0..3 {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            submit_candidates = collect_candidates(&raw_walker, window, is_submit_button);
+            if !submit_candidates.is_empty() {
+                break;
+            }
+        }
+        log_candidates(&mut outcome, "「送信」", &submit_candidates);
         match pick_best(&submit_candidates) {
             Some(submit_target) => {
                 let submit_method = invoke_candidate(submit_target, window).map_err(|error| {
                     format!(
-                        "「1. 是」は選択しましたが、「提交」の invoke に失敗しました: {error}。手動で送信してください。"
+                        "「1. はい」は選択しましたが、「送信」の invoke に失敗しました: {error}。手動で送信してください。"
                     )
                 })?;
                 outcome.notes.push(format!(
@@ -1375,19 +1385,66 @@ fn is_close_or_cancel_button(name: &str) -> bool {
         || lower == "关闭对话框"
 }
 
+fn starts_with_one_prefix(s: &str) -> bool {
+    let trimmed = s.trim();
+    let mut chars = trimmed.chars();
+    let Some(first) = chars.next() else { return false; };
+    if first == '①' {
+        return true;
+    }
+    if first == '1' || first == '１' {
+        let Some(second) = chars.next() else {
+            return true; // Just "1"
+        };
+        if !second.is_ascii_digit() && !('０'..='９').contains(&second) {
+            return true;
+        }
+    }
+    false
+}
+
+fn starts_with_three_prefix(s: &str) -> bool {
+    let trimmed = s.trim();
+    let mut chars = trimmed.chars();
+    let Some(first) = chars.next() else { return false; };
+    if first == '③' {
+        return true;
+    }
+    if first == '3' || first == '３' {
+        let Some(second) = chars.next() else {
+            return true; // Just "3"
+        };
+        if !second.is_ascii_digit() && !('０'..='９').contains(&second) {
+            return true;
+        }
+    }
+    false
+}
+
+fn starts_with_recommended_prefix(s: &str) -> bool {
+    let trimmed = s.trim();
+    let mut chars = trimmed.chars();
+    let Some(first) = chars.next() else { return false; };
+    if ('①'..='⑨').contains(&first) {
+        return true;
+    }
+    if (first.is_ascii_digit() && first != '0') || ('１'..='９').contains(&first) {
+        let Some(second) = chars.next() else {
+            return true; // Just a single digit
+        };
+        if !second.is_ascii_digit() && !('０'..='９').contains(&second) {
+            return true;
+        }
+    }
+    false
+}
+
 fn is_first_yes_option(name: &str) -> bool {
     let trimmed = name.trim();
     if is_standalone_primary_approval_label(trimmed) {
         return true;
     }
-
-    let starts_with_one = trimmed.starts_with("1.")
-        || trimmed.starts_with("1、")
-        || trimmed.starts_with("1。")
-        || trimmed.starts_with("1)")
-        || trimmed.starts_with("1 .");
-
-    starts_with_one && looks_like_primary_approval_option(trimmed)
+    starts_with_one_prefix(trimmed) && looks_like_primary_approval_option(trimmed)
 }
 
 fn is_standalone_primary_approval_label(label: &str) -> bool {
@@ -1415,8 +1472,8 @@ fn looks_like_primary_approval_option(name: &str) -> bool {
 /// 番号付き選択肢を最優先で選んでクリックする。
 ///
 /// 偶発的なマッチ（例: 否系選択肢の説明文に「推荐」が含まれる）を避けるため、
-/// マーカーは必ずカッコで囲まれていることを要件とする。さらに 1〜9 の番号プレフィックスを
-/// 必須とする。
+/// マーカーは必ずカッコで囲まれていることを要件とする。さらに 1〜9（全角／半角／丸数字）の
+/// 番号プレフィックスを必須とする。
 fn is_recommended_option(name: &str) -> bool {
     let trimmed = name.trim();
     let lower = trimmed.to_lowercase();
@@ -1431,13 +1488,7 @@ fn is_recommended_option(name: &str) -> bool {
     if !has_marker {
         return false;
     }
-    // 番号プレフィックス必須（1〜9 の半角／全角バリアント）。
-    let numbered_prefixes = [
-        "1.", "2.", "3.", "4.", "5.", "6.", "7.", "8.", "9.", "1、", "2、", "3、", "4、", "5、",
-        "6、", "7、", "8、", "9、", "1。", "2。", "3。", "4。", "5。", "6。", "7。", "8。", "9。",
-        "1)", "2)", "3)", "4)", "5)", "6)", "7)", "8)", "9)", "1 .", "2 .", "3 .", "4 .", "5 .",
-    ];
-    numbered_prefixes.iter().any(|p| trimmed.starts_with(p))
+    starts_with_recommended_prefix(trimmed)
 }
 
 /// click_yes_inner で使う組み合わせ matcher。「1. 是」相当 もしくは「番号付き (推荐) 選択肢」
@@ -1452,14 +1503,7 @@ fn is_first_no_option(name: &str) -> bool {
     if is_standalone_primary_rejection_label(trimmed) {
         return true;
     }
-
-    let starts_with_three = trimmed.starts_with("3.")
-        || trimmed.starts_with("3、")
-        || trimmed.starts_with("3。")
-        || trimmed.starts_with("3)")
-        || trimmed.starts_with("3 .");
-
-    starts_with_three && looks_like_primary_rejection_option(trimmed)
+    starts_with_three_prefix(trimmed) && looks_like_primary_rejection_option(trimmed)
 }
 
 fn is_standalone_primary_rejection_label(label: &str) -> bool {
@@ -1486,35 +1530,19 @@ fn looks_like_primary_rejection_option(name: &str) -> bool {
 fn is_submit_button(name: &str) -> bool {
     let trimmed = name.trim();
     let lower = trimmed.to_lowercase();
-    trimmed == "提交"
-        || trimmed.starts_with("提交 ")
-        || trimmed == "送信"
-        || trimmed.starts_with("送信 ")
-        // 日本語版 Codex Desktop の実際の表記は「送信する」(screenshot 確認済み)。
-        || trimmed == "送信する"
-        || trimmed.starts_with("送信する ")
-        || trimmed == "確認"
-        || trimmed.starts_with("確認 ")
-        || trimmed == "確認する"
-        || trimmed.starts_with("確認する ")
-        // ask_user_question 系プロンプトの送信ボタン。
-        // - 中国語: 「继续」
-        // - 日本語: 「続行」(zokkou, Codex Desktop の実際の表記) / 「継続」(keizoku, 念のため)
-        // - 英語: "Continue"
-        // git commit dialog にも「继续」が現れるが、click_yes_inner では git_commit 分岐で
-        // 早期 return するため、ここに加えても誤動作しない。
-        || trimmed == "继续"
-        || trimmed.starts_with("继续 ")
-        || trimmed == "続行"
-        || trimmed.starts_with("続行 ")
-        || trimmed == "継続"
-        || trimmed.starts_with("継続 ")
-        || lower == "submit"
-        || lower.starts_with("submit ")
-        || lower == "continue"
-        || lower.starts_with("continue ")
+    trimmed.starts_with("提交")
+        || trimmed.starts_with("送信")
+        || trimmed.starts_with("確認")
+        || trimmed.starts_with("继续")
+        || trimmed.starts_with("続行")
+        || trimmed.starts_with("継続")
+        || lower.starts_with("submit")
+        || lower.starts_with("continue")
         || lower == "ok"
         || lower.starts_with("ok ")
+        || lower.starts_with("ok\t")
+        || lower.starts_with("ok\n")
+        || lower.starts_with("ok\r")
 }
 
 fn looks_like_approval_keyword(line: &str) -> bool {
@@ -1540,6 +1568,12 @@ fn looks_like_approval_keyword(line: &str) -> bool {
         || line.contains("（推奨）")
         || line.contains("(推奨)")
         || lower.contains("(recommended)")
+        || line.contains("プラン")
+        || line.contains("実施しますか")
+        || line.contains("実行しますか")
+        || line.contains("方案")
+        || line.contains("是否执行")
+        || lower.contains("plan")
         // サイドバーのバッジ（非アクティブ会話での承認待ち）も拾うため、
         // バッジ文字列単体を keyword_hit のトリガに含める。判定本体は
         // parser::is_pending_approval_badge と整合させる。
@@ -1759,19 +1793,29 @@ mod tests {
     fn matches_numbered_and_accessibility_stripped_yes_option() {
         assert!(is_first_yes_option("1. 是"));
         assert!(is_first_yes_option("1。是"));
+        assert!(is_first_yes_option("１. 是"));
+        assert!(is_first_yes_option("① 是"));
         assert!(is_first_yes_option("是"));
         assert!(is_first_yes_option("Yes"));
         assert!(is_first_yes_option("Approve"));
+        assert!(is_first_yes_option("1。 はい"));
+        assert!(is_first_yes_option("1. はい"));
+        assert!(is_first_yes_option("はい"));
     }
 
     #[test]
     fn matches_numbered_and_accessibility_stripped_no_option() {
         assert!(is_first_no_option("3. 否"));
         assert!(is_first_no_option("3。否"));
+        assert!(is_first_no_option("３. 否"));
+        assert!(is_first_no_option("③ 否"));
         assert!(is_first_no_option("否"));
         assert!(is_first_no_option("No"));
         assert!(is_first_no_option("Decline"));
         assert!(is_first_no_option("3. 否，请告知 Codex 如何調整"));
+        assert!(is_first_no_option("3。 いいえ、Codex に何をすべきかを別の方法で指示してください"));
+        assert!(is_first_no_option("3. いいえ"));
+        assert!(is_first_no_option("いいえ"));
     }
 
     #[test]
@@ -1839,6 +1883,8 @@ mod tests {
         assert!(is_recommended_option("3. オプション（おすすめ）"));
         assert!(is_recommended_option("1. Option A (Recommended)"));
         assert!(is_recommended_option("4. choice (recommended)"));
+        assert!(is_recommended_option("１。先改 AWS RAG (推荐)"));
+        assert!(is_recommended_option("① 先改 AWS RAG (推荐)"));
     }
 
     #[test]
@@ -1859,6 +1905,8 @@ mod tests {
         assert!(is_first_yes_or_recommended_option("1. 是"));
         assert!(is_first_yes_or_recommended_option("1. 先改 AWS RAG（推荐）"));
         assert!(is_first_yes_or_recommended_option("2. オプション（推奨）"));
+        assert!(is_first_yes_or_recommended_option("１。先改 AWS RAG (推荐)"));
+        assert!(is_first_yes_or_recommended_option("① 先改 AWS RAG (推荐)"));
         // 否定系・無関係は引っ掛けない。
         assert!(!is_first_yes_or_recommended_option("3. 否"));
         assert!(!is_first_yes_or_recommended_option("2. 全仓库本地化"));

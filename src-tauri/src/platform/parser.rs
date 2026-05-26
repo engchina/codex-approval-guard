@@ -176,13 +176,24 @@ fn looks_like_approval_text(title: &str, raw_text: &[String]) -> bool {
         || text.contains("(推荐)")
         || text.contains("（推奨）")
         || text.contains("(推奨)")
+        || text.contains("（おすすめ）")
+        || text.contains("(おすすめ)")
         || text.contains("(recommended)")
+        || text.contains("（recommended）")
+        || text.contains("実施しますか")
+        || text.contains("実行しますか")
+        || text.contains("このプラン")
+        || text.contains("执行此方案")
+        || text.contains("是否执行该方案")
+        || text.contains("是否执行此方案")
+        || text.contains("execute this plan")
+        || text.contains("execute the plan")
 }
 
 fn extract_command(raw_text: &[String]) -> Option<String> {
-    // ファイル編集の承認ダイアログ（apply changes 系）ではコマンドは存在しないため、
+    // ファイル編集の承認ダイアログ（apply changes 系）やプラン確認ダイアログではコマンドは存在しないため、
     // チャット履歴中の "git add" などを誤って拾わないよう早期に return する。
-    if is_apply_changes_prompt(raw_text) {
+    if is_apply_changes_prompt(raw_text) || is_plan_prompt(raw_text) {
         return None;
     }
 
@@ -248,6 +259,20 @@ fn is_apply_changes_prompt(raw_text: &[String]) -> bool {
     })
 }
 
+fn is_plan_prompt(raw_text: &[String]) -> bool {
+    raw_text.iter().any(|line| {
+        let lower = line.to_lowercase();
+        lower.contains("このプランを実施しますか")
+            || lower.contains("プランを実施しますか")
+            || lower.contains("実行しますか")
+            || lower.contains("是否执行此方案")
+            || lower.contains("是否执行该方案")
+            || lower.contains("是否执行方案")
+            || lower.contains("execute this plan")
+            || lower.contains("execute the plan")
+    })
+}
+
 fn extract_command_after_approval_prompt(raw_text: &[String]) -> Option<String> {
     for (index, line) in raw_text.iter().enumerate() {
         let lower = line.to_lowercase();
@@ -309,10 +334,74 @@ fn split_concatenated_commands(line: &str) -> String {
         }
     }
 
-    match cut {
+    let command = match cut {
         Some(pos) => trimmed[..pos].trim_end().to_string(),
         None => trimmed.to_string(),
+    };
+    trim_trailing_command_note(&command).to_string()
+}
+
+fn trim_trailing_command_note(command: &str) -> &str {
+    let tokens = indexed_tokens(command);
+    if tokens.len() < 4 {
+        return command.trim();
     }
+
+    let first = tokens[0].text.to_lowercase();
+    let second = tokens[1].text.to_lowercase();
+    if !matches!(first.as_str(), "npm" | "pnpm" | "yarn")
+        || second != "run"
+        || tokens[3].text.starts_with('-')
+        || !looks_like_natural_language_note(tokens[3].text)
+    {
+        return command.trim();
+    }
+
+    command[..tokens[2].end].trim_end()
+}
+
+#[derive(Debug)]
+struct IndexedToken<'a> {
+    text: &'a str,
+    end: usize,
+}
+
+fn indexed_tokens(input: &str) -> Vec<IndexedToken<'_>> {
+    let mut tokens = Vec::new();
+    let mut start = None;
+
+    for (index, char) in input.char_indices() {
+        if char.is_whitespace() {
+            if let Some(token_start) = start.take() {
+                tokens.push(IndexedToken {
+                    text: &input[token_start..index],
+                    end: index,
+                });
+            }
+        } else if start.is_none() {
+            start = Some(index);
+        }
+    }
+
+    if let Some(token_start) = start {
+        tokens.push(IndexedToken {
+            text: &input[token_start..],
+            end: input.len(),
+        });
+    }
+
+    tokens
+}
+
+fn looks_like_natural_language_note(token: &str) -> bool {
+    let trimmed = token.trim_start_matches(|char: char| {
+        matches!(char, '"' | '\'' | '`' | '(' | '[' | '（' | '「')
+    });
+    [
+        "确认", "確認", "検証", "确保", "確実", "请", "請", "为了", "為了", "ため",
+    ]
+    .iter()
+    .any(|prefix| trimmed.starts_with(prefix))
 }
 
 fn looks_like_shell_command(value: &str) -> bool {
@@ -522,6 +611,9 @@ fn infer_permission(raw_text: &[String]) -> Option<String> {
         || text.contains("apply these changes")
         || text.contains("apply changes")
         || text.contains("変更")
+        || text.contains("プラン")
+        || text.contains("方案")
+        || text.contains("plan")
     {
         return Some("file".to_string());
     }
@@ -752,6 +844,18 @@ mod tests {
     }
 
     #[test]
+    fn trims_natural_language_note_after_npm_run_command() {
+        assert_eq!(
+            split_concatenated_commands("npm run web:test 确认前端现有核心行为不可回归."),
+            "npm run web:test"
+        );
+        assert_eq!(
+            split_concatenated_commands("npm run web:test -- --watch"),
+            "npm run web:test -- --watch"
+        );
+    }
+
+    #[test]
     fn parses_codex_desktop_chinese_apply_changes_fixture() {
         let observed = parse_observed_approval_with_context(
             "制定RAG开发计划",
@@ -909,5 +1013,52 @@ mod tests {
         ];
         assert!(looks_like_git_commit_window("提交更改", &lines));
         assert!(looks_like_git_commit_window("Codex", &lines));
+    }
+
+    #[test]
+    fn parses_japanese_plan_confirmation_popup() {
+        let lines = vec![
+            "プラン".to_string(),
+            "本地化改造方案".to_string(),
+            "Summary".to_string(),
+            "このプランを実施しますか？".to_string(),
+            "1。 はい、このプランを実施します".to_string(),
+            "2。 いいえ、Codex に何をすべきかを別の方法で指示してください".to_string(),
+            "閉じる".to_string(),
+            "送信する".to_string(),
+        ];
+        let observed = parse_observed_approval_with_context(
+            "Codex",
+            lines,
+            "test",
+            true,
+        )
+        .expect("should parse Japanese plan confirmation");
+
+        assert_eq!(observed.request.command, None);
+        assert_eq!(observed.request.requested_permission.as_deref(), Some("file"));
+    }
+
+    #[test]
+    fn parses_chinese_plan_confirmation_popup() {
+        let lines = vec![
+            "方案".to_string(),
+            "本地化改造方案".to_string(),
+            "是否执行此方案？".to_string(),
+            "1。 是，执行此方案".to_string(),
+            "2。 否，请告知 Codex 如何调整".to_string(),
+            "关闭".to_string(),
+            "提交".to_string(),
+        ];
+        let observed = parse_observed_approval_with_context(
+            "Codex",
+            lines,
+            "test",
+            true,
+        )
+        .expect("should parse Chinese plan confirmation");
+
+        assert_eq!(observed.request.command, None);
+        assert_eq!(observed.request.requested_permission.as_deref(), Some("file"));
     }
 }
