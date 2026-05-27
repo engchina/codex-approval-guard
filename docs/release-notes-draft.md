@@ -1,64 +1,56 @@
 # 次回リリースノート草稿
 
-このドキュメントは `v0.1.10` の Codex Approval Guard リリース用の草稿です。
+このドキュメントは `v0.1.11` の Codex Approval Guard リリース用の草稿です。
 
-実装言語ではなくリリースノート言語で書きます。`CHANGELOG.md` の `## 0.1.10 - 2026-05-28` を起点に、ユーザーが理解できる粒度に書き直してここに記録してください。
+実装言語ではなくリリースノート言語で書きます。`CHANGELOG.md` の `## 0.1.11 - 2026-05-28` を起点に、ユーザーが理解できる粒度に書き直してここに記録してください。
 
 ## Suggested Release Title
 
-`Codex Approval Guard v0.1.10`
+`Codex Approval Guard v0.1.11`
 
 ## Short Summary
 
-v0.1.10 は、Windows でサイドバーの pending 会話をアクティブ化する際に、Codex Desktop の「チャット名を変更 / Rename chat」ダイアログが意図せず開く問題を修正します。サイドバー会話の操作では `Invoke` より `Select` を優先し、万一 rename dialog が開いた場合も承認候補として扱わず Escape で閉じます。あわせて、v0.1.9 の回路ブレーカーは一度外し、今回判明した副作用へ直接対処する形に戻します。
+v0.1.11 は、直近の自動操作を表示するステータスカードのレイアウト安定性を改善します。判定ラベルや適用ルールが長い場合でも、カード全体が押し広げられたり、内容が詰まって読みづらくなったりしにくくなります。
 
 ## Suggested GitHub Release Body
 
 ### Highlights
 
-- Windows UIA backend で、サイドバー pending 会話を選択する際に `SelectionItemPattern.select` を優先するようにしました。
-- `InvokePattern.invoke` が Codex Desktop 側で rename 操作に割り当てられている場合でも、「チャット名を変更」ダイアログを開きにくくなります。
-- 「チャット名を変更 / Rename chat / 重命名聊天」ダイアログを検出した場合は承認候補として扱わず、Escape broadcast で自動閉鎖します。
-- v0.1.9 の auto-approve burst / UIA observe failure 回路ブレーカーはいったん削除しました。今回の問題は自動停止ではなく、rename dialog 副作用の直接抑止で対応します。
+- 直近の自動操作カードで、判定ラベルが長い場合の横方向の崩れを抑えました。
+- 判定欄を省略表示にし、カード内の 2 カラム表示が安定するようにしました。
+- ラベルと値を縦方向に揃え、長い適用ルールがある場合でも詰まりにくくしました。
+- ステータスカードが親コンテナ内で縮みすぎないように調整しました。
 
 ### Why This Release Matters
 
-v0.1.8 以降、アクティブ会話の承認処理後に、サイドバーの別 pending 会話をアクティブ化する経路が入りました。Windows UI Automation ではサイドバー会話の ListItem に `Invoke` を投げられますが、Codex Desktop 側ではこの既定動作が「会話名を変更」に割り当てられている場合があります。
+Codex Approval Guard は小さな常駐ウィンドウ内で、監視状態、直近の自動操作、監査履歴を同時に表示します。
 
-その結果、Guard が pending 会話を選ぼうとしただけで rename dialog を開き、次の観測が承認ダイアログではなく rename dialog に当たって詰まる可能性がありました。
-
-v0.1.10 では、サイドバー会話のアクティブ化では `Select` を先に使い、rename dialog が見えた場合は Escape で閉じます。これにより、複数会話の承認待ちを処理する経路を維持しつつ、意図しない rename dialog の副作用を抑えます。
+判定名や適用ルールが長い場合、カード内の 2 カラム領域が横に押し広げられたり、ラベルと値が詰まって視認性が落ちたりすることがありました。v0.1.11 では、カードの縮小耐性とテキストの省略表示を調整し、狭いウィンドウでも状態を確認しやすくしています。
 
 ### User-Facing Improvements
 
-#### Windows pending conversation
+#### ステータスカード
 
-- サイドバーの「承認が必要」会話を選択する時に `SelectionItemPattern.select` を優先。
-- `Invoke` は `Select` が使えない場合の fallback に限定。
-- rename dialog が開いた場合は自動的に Escape を送信。
+- 自動操作表示カードの `flex-shrink` を抑制。
+- 判定欄を `nowrap` + `text-overflow: ellipsis` に変更。
+- ラベルを block 表示にし、値との間隔を安定化。
+- 2 カラムの各セルに `min-width: 0` を指定し、長い内容でも親幅内に収まるように調整。
 
-#### 誤認防止
+#### 表示安定性
 
-- rename dialog は承認候補として扱わない。
-- 日本語、中国語、英語の rename dialog 表現を判定対象に追加。
-- rename dialog を検出した場合は diagnostics に記録。
-
-#### 挙動変更
-
-- v0.1.9 の回路ブレーカーは削除。
-- 自動 paused への切り替えではなく、rename dialog の副作用を直接抑止する実装に変更。
+- 監視中カードと自動操作カードの切り替え時に、カードが過度に縮まないように改善。
+- 長い判定名や rule 名がある場合でも、カード内の読み取り順が崩れにくくなりました。
 
 ### Suggested "Upgrade Notes" Section
 
 既存設定の移行操作は不要です。
 
-v0.1.9 で追加された `circuit_breaker:*` による自動 paused は、このリリースでは作動しません。長時間運用時の異常停止ガードよりも、今回判明した rename dialog 副作用の直接修正を優先しています。
+このリリースは UI 表示の安定化のみで、承認判定や自動操作ロジックには変更ありません。
 
 ### Suggested "Who Should Update" Section
 
 このリリースは特に次のユーザーに有用です:
 
-- Windows で複数会話 / 複数プロジェクトの承認待ちを扱う
-- Codex Desktop の「チャット名を変更」ダイアログが意図せず開く
-- pending conversation の自動アクティブ化が rename dialog で詰まる
-- v0.1.9 の自動 paused より、rename dialog の直接修正を優先したい
+- 小さめのウィンドウサイズで Codex Approval Guard を常駐表示している
+- 直近の自動操作カードで判定や適用ルールが読みづらい
+- 長い rule 名や permission 名を確認することが多い

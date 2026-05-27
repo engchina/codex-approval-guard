@@ -1,6 +1,6 @@
 [package]
 name = "codex-approval-guard"
-version = "0.1.10"
+version = "0.1.11"
 description = "Scoped Codex approval assistant"
 authors = ["engchina"]
 edition = "2021"

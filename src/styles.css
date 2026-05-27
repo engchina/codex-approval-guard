@@ -380,6 +380,7 @@ button:disabled {
   box-shadow: var(--shadow-md);
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   overflow: hidden;
+  flex-shrink: 0;
 }
 
 .status-card.monitoring {
@@ -526,14 +527,24 @@ button:disabled {
   grid-template-columns: 1fr 1fr;
   gap: 12px;
   margin-top: 2px;
+  align-items: start;
+}
+
+.event-field-row > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
 .label {
+  display: block;
   font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--color-text-muted);
+  line-height: 1.4;
 }
 
 .value {
@@ -560,9 +571,14 @@ button:disabled {
 }
 
 .value-decision {
+  display: block;
   font-size: 12px;
   font-weight: 600;
   color: var(--color-success);
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .value-rule {
