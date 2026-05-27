@@ -20,6 +20,26 @@
 
 <!-- リファクタ、ツール、テスト、リリースプロセスなど、プロジェクト履歴に残したい保守作業。 -->
 
+## 0.1.10 - 2026-05-28
+
+### Added
+
+- Codex Desktop の「チャット名を変更 / Rename chat / 重命名聊天」ダイアログを検出し、承認候補として扱わず Escape broadcast で自動閉鎖する保護を追加。
+
+### Changed
+
+- サイドバーの pending 会話をアクティブ化する Windows UIA 経路で、`InvokePattern.invoke` より `SelectionItemPattern.select` を優先するように変更。Codex 側で `Invoke` が rename 操作に割り当てられているケースの副作用を避ける。
+- v0.1.9 で追加した auto-approve burst / UIA observe failure の回路ブレーカーをいったん削除。自動 paused への切り替えではなく、今回判明した rename dialog 副作用を直接抑止する実装に戻した。
+
+### Fixed
+
+- サイドバーの「承認が必要」会話を選択する際、Codex の「チャット名を変更」ダイアログが意図せず開く問題を修正。
+- rename dialog が開いた状態を承認ダイアログとして誤認し、以後の自動承認観測が詰まる可能性を修正。
+
+### Internal
+
+- rename chat dialog の多言語判定テストを追加。
+
 ## 0.1.9 - 2026-05-27
 
 ### Added

@@ -3,8 +3,8 @@ use super::matchers::{
     is_recommended_option, is_submit_button, looks_like_approval_keyword,
 };
 use super::parser::{
-    is_pending_approval_badge, looks_like_git_commit_window, parse_observed_approval_with_context,
-    title_matches_git_commit,
+    is_pending_approval_badge, looks_like_git_commit_window, looks_like_rename_chat_dialog,
+    parse_observed_approval_with_context, title_matches_git_commit,
 };
 use super::ClickOutcome;
 use super::ObserveDiagnostics;
@@ -241,6 +241,18 @@ fn parse_window(
             raw_text.len(),
             keyword_hit,
         ));
+
+        // 「チャット名を変更 / Rename chat / 重命名聊天」ダイアログ検出。Guard が
+        // 過去にサイドバー会話に Invoke を投げて意図せず開いてしまったケースの
+        // 自動リカバリ。承認候補としては扱わず、Escape を投げて閉じてから観察を中止する。
+        // dismiss は副作用だが、自分で開いてしまった dialog を自分で閉じるのは妥当。
+        if looks_like_rename_chat_dialog(title, &raw_text) {
+            let posted = dismiss_dialog_via_escape_broadcast(window);
+            diagnostics.notes.push(format!(
+                "  parse: rename-chat dialog detected (view={view_name}) → 自動 Escape 送信 (posted={posted})。承認候補としては扱わない。"
+            ));
+            return None;
+        }
 
         // Git commit window check（タイトル不一致だが本文に含まれるケース。
         // この場合 dialog は WebView 内蔵 modal のため WM_CLOSE は使えない。
@@ -691,6 +703,15 @@ struct Candidate {
     has_invoke: bool,
     has_select: bool,
     has_legacy: bool,
+    /// `invoke_candidate` で `SelectionItemPattern.select` を優先するかどうか。
+    /// 既定は false（既存挙動: Invoke → Select → Legacy → BG click の順）。
+    ///
+    /// サイドバーの会話 ListItem では UIA `Invoke` の既定動作が **rename** に割り当て
+    /// られているため、Invoke を先に試すと「チャット名を変更」ダイアログが意図せず
+    /// 開いてしまう。サイドバー会話を「アクティブ化（選択）」したい場合は
+    /// `SelectionItemPattern.select` のほうが正しい。`true` のときは
+    /// Select → Invoke → Legacy の順に試行する。
+    prefer_select: bool,
 }
 
 impl Candidate {
@@ -793,6 +814,7 @@ fn collect_candidates_recursive(
                 has_invoke: element.get_pattern::<UIInvokePattern>().is_ok(),
                 has_select: element.get_pattern::<UISelectionItemPattern>().is_ok(),
                 has_legacy: element.get_pattern::<UILegacyIAccessiblePattern>().is_ok(),
+                prefer_select: false,
             });
         }
     }
@@ -852,6 +874,10 @@ fn collect_pending_approval_recursive(
             has_select: target.get_pattern::<UISelectionItemPattern>().is_ok(),
             has_legacy: target.get_pattern::<UILegacyIAccessiblePattern>().is_ok(),
             element: target,
+            // サイドバー会話 ListItem の Invoke は Codex Desktop 上で「rename
+            // (チャット名を変更)」ダイアログを開く副作用がある。会話の
+            // アクティブ化が目的なので Select を優先する。
+            prefer_select: true,
         };
         out.push(candidate);
     }
@@ -1283,6 +1309,61 @@ fn try_post_escape_via_attached_focus(
     }
 }
 
+/// observe 段階で「チャット名を変更」ダイアログを検出した時に呼ばれる、
+/// `ClickOutcome` 非依存の軽量 Escape ブロードキャスト。
+///
+/// `try_post_escape_broadcast` と挙動は同じだが、診断ログを `outcome` ではなく
+/// 戻り値（送信に成功した HWND 数）に集約しているだけ。HWND を取れない／
+/// PostMessage が全滅した場合は 0 を返す（呼び出し側で「失敗」として扱える）。
+fn dismiss_dialog_via_escape_broadcast(window: &UIElement) -> usize {
+    let Ok(handle) = window.get_native_window_handle() else {
+        return 0;
+    };
+    let hwnd_win: windows::Win32::Foundation::HWND = handle.into();
+    let hwnd_raw = hwnd_win.0 as windows_sys::Win32::Foundation::HWND;
+    if hwnd_raw.is_null() {
+        return 0;
+    }
+
+    let mut collector = ChildHwndCollector {
+        hwnds: Vec::new(),
+        truncated: false,
+    };
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::EnumChildWindows(
+            hwnd_raw,
+            Some(collect_child_hwnds),
+            &mut collector as *mut _ as windows_sys::Win32::Foundation::LPARAM,
+        );
+    }
+    let mut targets: Vec<windows_sys::Win32::Foundation::HWND> = vec![hwnd_raw];
+    targets.extend(collector.hwnds);
+
+    let mut posted = 0usize;
+    for target in &targets {
+        let ok_down = unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
+                *target,
+                windows_sys::Win32::UI::WindowsAndMessaging::WM_KEYDOWN,
+                VK_ESCAPE_RAW,
+                ESC_LPARAM_DOWN,
+            )
+        };
+        let ok_up = unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
+                *target,
+                windows_sys::Win32::UI::WindowsAndMessaging::WM_KEYUP,
+                VK_ESCAPE_RAW,
+                ESC_LPARAM_UP,
+            )
+        };
+        if ok_down != 0 && ok_up != 0 {
+            posted += 1;
+        }
+    }
+    posted
+}
+
 /// Escape 経路3: 親 + 子孫 HWND 全部にブロードキャスト。
 fn try_post_escape_broadcast(
     hwnd_raw: windows_sys::Win32::Foundation::HWND,
@@ -1434,7 +1515,18 @@ fn invoke_candidate(
     candidate: &Candidate,
     parent_window: &UIElement,
 ) -> Result<&'static str, String> {
-    if candidate.has_invoke {
+    // サイドバー pending 会話など、`prefer_select` が立っている候補では Select を先に試す。
+    // Invoke を先に試すと Codex Desktop が rename ダイアログを開いてしまうため。
+    if candidate.prefer_select && candidate.has_select {
+        if let Ok(pattern) = candidate.element.get_pattern::<UISelectionItemPattern>() {
+            // select() が失敗した場合は Invoke / Legacy へフォールバック（エラーで早期 return しない）。
+            // rename を避けたいが、何も出来ない状態よりは既定動作のほうがマシ。
+            if pattern.select().is_ok() {
+                return Ok("selection-item");
+            }
+        }
+    }
+    if candidate.has_invoke && !candidate.prefer_select {
         if let Ok(pattern) = candidate.element.get_pattern::<UIInvokePattern>() {
             if let Err(error) = pattern.invoke() {
                 return Err(format!("InvokePattern.invoke 失敗: {error}"));
@@ -1448,6 +1540,16 @@ fn invoke_candidate(
                 return Err(format!("SelectionItemPattern.select 失敗: {error}"));
             }
             return Ok("selection-item");
+        }
+    }
+    // prefer_select が立っていて Select が利用不可だった場合の最終フォールバック。
+    // ここで Invoke を試すと rename を開くリスクが残るが、サイドバーアクティブ化が
+    // 全くできないよりは前進できる（実用上 Select が無い ListItem は稀）。
+    if candidate.prefer_select && candidate.has_invoke {
+        if let Ok(pattern) = candidate.element.get_pattern::<UIInvokePattern>() {
+            if pattern.invoke().is_ok() {
+                return Ok("invoke-after-select-failed");
+            }
         }
     }
     if candidate.has_legacy {

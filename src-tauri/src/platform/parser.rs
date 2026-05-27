@@ -97,6 +97,40 @@ pub fn looks_like_git_commit_window(title: &str, raw_text: &[String]) -> bool {
         || (combined_text.contains("commit message") && combined_text.contains("branch"))
 }
 
+/// Codex Desktop の「会話名（チャット名）の変更」ダイアログかどうか判定する。
+///
+/// この dialog は本来ユーザーが「会話名を編集」UI から開くものだが、Guard 側の
+/// UI Automation `Invoke` をサイドバー会話 ListItem に投げると、Codex が `Invoke`
+/// の既定動作として **rename を発火する** ため、自動承認フローが副作用として
+/// この dialog を開いてしまうことがある。
+///
+/// 観測段階でこの dialog を検出した場合、承認候補としては扱わず、呼び出し側で
+/// Escape を送って閉じる。
+///
+/// 注意:
+/// - title だけでは判定できない（WebView 内蔵 modal では title は元の会話名のまま）。
+///   raw_text にも含めて combined で判定する。
+/// - 「チャット名 / 聊天名 / chat name」のような短すぎる語は会話一覧などに頻出する
+///   ため使わない。必ず「変更 / 重命名 / Rename / Change」とのセットで判定する。
+pub fn looks_like_rename_chat_dialog(title: &str, raw_text: &[String]) -> bool {
+    let combined = format!("{}\n{}", title, raw_text.join("\n"));
+    let lower = combined.to_lowercase();
+    combined.contains("チャット名を変更")
+        || combined.contains("チャット名の変更")
+        || combined.contains("チャットの名前を変更")
+        || combined.contains("会話名を変更")
+        || combined.contains("会話の名前を変更")
+        || combined.contains("重命名聊天")
+        || combined.contains("重命名会话")
+        || combined.contains("修改聊天名")
+        || combined.contains("修改会话名")
+        || combined.contains("更改聊天名")
+        || combined.contains("更改会话名")
+        || lower.contains("rename chat")
+        || lower.contains("rename conversation")
+        || lower.contains("change chat name")
+}
+
 /// タイトルのみで git commit dialog かどうか判定する。
 /// title だけで命中する場合、Codex Desktop は独立した HWND（Tauri Window）として
 /// dialog を開いていると判断でき、WM_CLOSE 等の HWND 直接操作が安全に利用できる。
@@ -1023,6 +1057,38 @@ mod tests {
                 "should NOT detect `{label}` as pending-approval badge"
             );
         }
+    }
+
+    #[test]
+    fn detects_rename_chat_dialog_in_known_languages() {
+        // 各言語版の dialog タイトル/本文をカバー。短すぎる語（「チャット名」「chat name」
+        // 単独）には引っ掛けず、必ず「変更 / 重命名 / Rename / Change」とのセットで判定する。
+        assert!(looks_like_rename_chat_dialog("チャット名を変更", &[]));
+        assert!(looks_like_rename_chat_dialog(
+            "启动项目",
+            &["チャット名を変更".to_string()]
+        ));
+        assert!(looks_like_rename_chat_dialog(
+            "Codex",
+            &["重命名聊天".to_string(), "短く、わかりやすく".to_string()],
+        ));
+        assert!(looks_like_rename_chat_dialog(
+            "Codex",
+            &[
+                "Rename chat".to_string(),
+                "Short and descriptive".to_string()
+            ],
+        ));
+        // 無関係なケース。
+        assert!(!looks_like_rename_chat_dialog("启动项目", &[]));
+        assert!(!looks_like_rename_chat_dialog(
+            "Codex",
+            &["チャット名".to_string()]
+        ));
+        assert!(!looks_like_rename_chat_dialog(
+            "Codex",
+            &["chat name".to_string()]
+        ));
     }
 
     #[test]

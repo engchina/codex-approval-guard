@@ -517,7 +517,7 @@ dependencies = [
 
 [[package]]
 name = "codex-approval-guard"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "accessibility-sys",
  "chrono",

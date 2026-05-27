@@ -1,5 +1,4 @@
 mod audit;
-mod circuit;
 mod platform;
 mod policy;
 mod update;
@@ -7,9 +6,8 @@ mod update;
 use std::sync::Mutex;
 
 use audit::{AuditEntry, AuditStore};
-use circuit::GuardCircuit;
 use platform::{ClickOutcome, ObserveDiagnostics, ObservedApproval, PlatformSnapshot};
-use policy::{ApprovalDecision, ApprovalRequest, DecisionAction, PolicyConfig, RiskLevel};
+use policy::{ApprovalDecision, ApprovalRequest, DecisionAction, PolicyConfig};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{async_runtime, Manager, State, WindowEvent};
@@ -18,7 +16,6 @@ struct AppState {
     policy: Mutex<PolicyConfig>,
     policy_path: std::path::PathBuf,
     audit: AuditStore,
-    circuit: GuardCircuit,
 }
 
 impl AppState {
@@ -50,51 +47,7 @@ impl AppState {
             policy: Mutex::new(policy),
             policy_path,
             audit: AuditStore::new(app_data_dir.join("audit.jsonl")),
-            circuit: GuardCircuit::new(),
         })
-    }
-
-    /// 回路ブレーカー作動時の共通処理: policy を paused に倒し、その変更を
-    /// ディスクへ書き戻し、システム由来のエントリとして audit log に追記する。
-    /// 失敗してもプロセスは継続する（個別のエラーだけ stderr へ出す）。
-    fn trigger_circuit_breaker(&self, kind: &str, reason: &str) {
-        let updated = {
-            let mut policy = match self.policy.lock() {
-                Ok(guard) => guard,
-                Err(_) => return,
-            };
-            if policy.paused {
-                // すでに paused なら状態変更は不要。audit だけ書く。
-                policy.clone()
-            } else {
-                policy.paused = true;
-                policy.clone()
-            }
-        };
-        if let Err(error) = self.persist_policy(&updated) {
-            eprintln!("[circuit] policy 永続化に失敗しました（メモリ上では paused 済）: {error}");
-        }
-
-        let synthetic_request = ApprovalRequest {
-            id: None,
-            source_app: "Codex Approval Guard".to_string(),
-            window_title: format!("（システム）回路ブレーカー作動: {kind}"),
-            prompt_text: reason.to_string(),
-            command: None,
-            cwd: None,
-            target_paths: Vec::new(),
-            requested_permission: Some(format!("circuit_breaker:{kind}")),
-        };
-        let synthetic_decision = ApprovalDecision {
-            action: DecisionAction::Prompt,
-            risk: RiskLevel::High,
-            reason: reason.to_string(),
-            matched_rule: Some(format!("circuit_breaker:{kind}")),
-            would_auto_approve: false,
-        };
-        if let Err(error) = self.audit.append(&synthetic_request, &synthetic_decision) {
-            eprintln!("[circuit] audit log 追記に失敗しました: {error}");
-        }
     }
 
     /// 現在のポリシーをディスクへ書き出す。書き込みに失敗してもメモリ上の状態は維持する。
@@ -146,36 +99,11 @@ async fn get_guard_state(state: State<'_, AppState>) -> Result<GuardState, Strin
 async fn observe_approval_request(
     state: State<'_, AppState>,
 ) -> Result<ApprovalObservation, String> {
-    // UIA observe の結果を回路ブレーカーへ報告する。spawn_blocking の panic /
-    // 内部 UIA error の両方を「失敗」として扱う。成功（observed が None でも
-    // platform 走査自体は完走）したら failure 連続カウンタはリセットされる。
-    let join_result = async_runtime::spawn_blocking(platform::observe_approval_request).await;
-    let observe_result = match join_result {
-        Ok(inner) => inner,
-        Err(join_error) => {
-            if let Some(reason) = state.circuit.record_observe_result(false) {
-                state.trigger_circuit_breaker("uia_failure", &reason);
-            }
-            return Err(format!(
-                "UI Automation observation を実行できません: {join_error}"
-            ));
-        }
-    };
-    let (observed, diagnostics) = match observe_result {
-        Ok(pair) => {
-            if let Some(reason) = state.circuit.record_observe_result(true) {
-                // 成功時は通常 None だが、リセット直後の特殊条件を将来追加する余地。
-                state.trigger_circuit_breaker("uia_failure", &reason);
-            }
-            pair
-        }
-        Err(platform_error) => {
-            if let Some(reason) = state.circuit.record_observe_result(false) {
-                state.trigger_circuit_breaker("uia_failure", &reason);
-            }
-            return Err(platform_error);
-        }
-    };
+    let (observed, diagnostics) = async_runtime::spawn_blocking(platform::observe_approval_request)
+        .await
+        .map_err(|join_error| {
+            format!("UI Automation observation を実行できません: {join_error}")
+        })??;
     let platform = platform_snapshot_from_observation(&observed);
     let Some(observed_request) = observed else {
         return Ok(ApprovalObservation {
@@ -324,19 +252,6 @@ async fn auto_approve_observed_request(
         )
     };
     state.audit.append(&request, &audit_decision)?;
-
-    // 自動承認 burst 検出: 同一コマンドが短時間に連発で auto-approve されている
-    // 場合に paused へ倒す。今回の click はすでに実行済みなので中断せず、
-    // 次サイクル以降の polling を抑止するだけ。dismiss / deny も含めて記録する
-    // （Codex 側の異常ループでは dismiss も連発しうるため）。
-    let burst_key = request
-        .command
-        .as_deref()
-        .filter(|c| !c.trim().is_empty())
-        .unwrap_or(&request.window_title);
-    if let Some(reason) = state.circuit.record_auto_approve(burst_key) {
-        state.trigger_circuit_breaker("auto_approve_burst", &reason);
-    }
 
     Ok(AutoApproveOutcome {
         decision: audit_decision,
