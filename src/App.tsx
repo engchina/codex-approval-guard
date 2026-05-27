@@ -38,7 +38,11 @@ const riskLabels: Record<string, string> = {
 };
 
 const AUDIT_DISPLAY_LIMIT = 3;
-const BACKGROUND_POLL_MS = 600;
+// 適応 polling: 直近で承認ダイアログを観測したサイクルでは短い間隔で次を回し、
+// 連続承認の取りこぼしを抑える。dialog が見つからないアイドル時は長い間隔に
+// 落として Codex プロセスへの UIA IPC 圧を下げる。
+const ACTIVE_POLL_MS = 300;
+const IDLE_POLL_MS = 1200;
 const AUTO_APPROVE_COOLDOWN_MS = 1500;
 
 function App() {
@@ -109,6 +113,9 @@ function App() {
   const pollingRef = useRef(false);
   const pausedRef = useRef(false);
   const lastApprovalAtRef = useRef(0);
+  // 直近の observation サイクルで dialog を検出したか。自適応 polling
+  // のサイクル間隔決定にだけ使う。
+  const lastSawDialogRef = useRef(false);
 
   const loadState = useCallback(async () => {
     const nextState = await callBackend<GuardState>("get_guard_state");
@@ -176,6 +183,7 @@ function App() {
       try {
         const result = await callBackend<ApprovalObservation>("observe_approval_request");
         setObservation(result);
+        lastSawDialogRef.current = Boolean(result.observed);
         const inCooldown =
           !manual && Date.now() - lastApprovalAtRef.current < AUTO_APPROVE_COOLDOWN_MS;
         const autoAction = result.decision?.action;
@@ -202,6 +210,9 @@ function App() {
         await loadState();
       } catch (err) {
         // Ignore background polling errors to keep UI stable
+        // 失敗時は次サイクルを「アイドル」扱いで長めの間隔に落とす。
+        // 連続失敗の本格的な保護は backend 側の circuit breaker が担う。
+        lastSawDialogRef.current = false;
       } finally {
         pollingRef.current = false;
       }
@@ -210,11 +221,34 @@ function App() {
   );
 
   useEffect(() => {
-    const id = window.setInterval(() => {
-      if (pausedRef.current) return;
-      void runObservation({ manual: false });
-    }, BACKGROUND_POLL_MS);
-    return () => window.clearInterval(id);
+    // 「完了 → 次の遅延」の連鎖型 setTimeout。間隔は直近サイクルの結果に応じて
+    // 動的に決める: dialog 検出時は ACTIVE_POLL_MS、それ以外は IDLE_POLL_MS。
+    // setInterval を使わない理由は、UIA 走査が遅延した時に呼び出しがキューに
+    // 溜まらないようにするため。
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const schedule = () => {
+      if (cancelled) return;
+      const delay = lastSawDialogRef.current ? ACTIVE_POLL_MS : IDLE_POLL_MS;
+      timer = window.setTimeout(async () => {
+        timer = null;
+        if (!cancelled && !pausedRef.current) {
+          try {
+            await runObservation({ manual: false });
+          } catch {
+            // runObservation は内部で例外を握り潰すが、念のためここでも握って次サイクルを継続する。
+          }
+        }
+        if (!cancelled) schedule();
+      }, delay);
+    };
+
+    schedule();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
   }, [runObservation]);
 
   const formatTime = (isoString: string) => {

@@ -383,16 +383,17 @@ mod tests {
 
     #[test]
     fn aarch64_falls_back_to_x64_if_no_arm64() {
-        let assets = vec![
-            asset(
-                "CodexApprovalGuard_0.1.2_windows_x64.exe",
-                "https://example.com/x64.exe",
-            ),
-        ];
+        let assets = vec![asset(
+            "CodexApprovalGuard_0.1.2_windows_x64.exe",
+            "https://example.com/x64.exe",
+        )];
 
-        let selected =
-            select_best_asset(&assets, UpdatePlatform::Windows, UpdateArchitecture::AArch64)
-                .expect("expected a fallback installer");
+        let selected = select_best_asset(
+            &assets,
+            UpdatePlatform::Windows,
+            UpdateArchitecture::AArch64,
+        )
+        .expect("expected a fallback installer");
 
         assert_eq!(selected.name, "CodexApprovalGuard_0.1.2_windows_x64.exe");
     }
@@ -433,13 +434,13 @@ mod tests {
                     assert!(!release.tag_name.is_empty());
                 }
                 Err(e) => {
-                    // リリースがまだない場合（404）やネットワーク環境によるエラーは許容
+                    // リリース未公開 (404) / オフライン / DNS 失敗 / プロキシ等の
+                    // ネットワーク起因のエラーは許容する。エラー文言は本番コードと
+                    // 同じ日本語 prefix で始まる前提で粗くチェックする。
                     assert!(
-                        e.contains("GitHub Releases request failed")
-                        || e.contains("404")
-                        || e.contains("接続に失敗")
-                        || e.contains("Connection refused"),
-                        "Unexpected error: {}", e
+                        e.contains("GitHub Releases") || e.contains("アップデートチェッカー"),
+                        "Unexpected error: {}",
+                        e
                     );
                 }
             }

@@ -20,6 +20,36 @@
 
 <!-- リファクタ、ツール、テスト、リリースプロセスなど、プロジェクト履歴に残したい保守作業。 -->
 
+## 0.1.9 - 2026-05-27
+
+### Added
+
+- 同一コマンドの自動承認が短時間に連発した場合、または UI Automation の観測が連続失敗した場合に、ガードを自動的に paused へ倒す回路ブレーカーを追加。作動理由は audit log に `circuit_breaker:*` として残す。
+- タスクトレイ常駐を追加。ウィンドウの X ボタンではプロセスを終了せず非表示にし、トレイの左クリックまたは「ウィンドウを表示」から復帰できる。「終了」メニューでは監視も含めて完全終了する。
+- Windows / macOS で単一インスタンス起動を強制し、複数プロセスが同じ `policy.json` や Codex 承認ダイアログを同時に扱う競合を防ぐ。
+
+### Changed
+
+- バックグラウンド polling を固定 600ms から適応型に変更。承認ダイアログ検出直後は 300ms、アイドル時は 1200ms で回し、取りこぼしを抑えつつ UIA IPC 負荷を下げる。
+- 設定と audit log の保存先解決で `current_dir()` への fallback をやめ、`app_data_dir` から `app_config_dir` の順に明示的なアプリ用ディレクトリだけを使うように変更。
+- audit log は自動操作ごとの記録をそのまま残すように変更。起動時刻ベースの擬似 dedup を廃止し、短時間に同じ操作が繰り返された事実を追跡できるようにした。
+- WebView CSP を有効化し、`default-src 'self'` ベースで IPC / dev server / data image など必要な経路だけを許可するように変更。
+- 外部 URL を開く backend コマンドを http/https のみに制限し、Windows では `cmd /c start` の空タイトル指定で URL を安全に渡すように変更。
+
+### Fixed
+
+- 承認/拒否ボタン判定の英語部分一致を単語境界ベースに変更し、`no` が `now` / `note` / `another` に、`yes` が `eyes` / `yesterday` に誤マッチする問題を修正。
+- command parser で `to_lowercase()` により UTF-8 バイト長が変わる文字を含む場合、結合コマンド分割が文字境界外 slice で panic する可能性を修正。
+- audit log の脱敏対象を `window_title` / `cwd` / `target_paths` / `requested_permission` まで広げ、空白や改行を維持したまま token / secret / password / credential を含む token を置換するように修正。
+- Windows UIA のプロセス名取得で全プロセス列挙を繰り返す処理をやめ、プロセスイメージパスの basename を使って polling 遅延を抑えるように修正。
+- Escape broadcast 経路で親 HWND だけでなく列挙できた子孫 HWND にも送るようにし、列挙上限に達した場合は notes に理由を残すように修正。
+
+### Internal
+
+- `GuardCircuit` の auto-approve burst / UIA failure counter と、audit / policy redaction / matcher / parser の回帰テストを追加。
+- `tauri-plugin-single-instance` を Windows / macOS 依存に追加し、不要になった Windows ToolHelp 依存を削除。
+- GitHub Releases 更新確認テストのネットワークエラー許容条件を、日本語 error prefix に合わせて更新。
+
 ## 0.1.8 - 2026-05-26
 
 ### Added

@@ -334,8 +334,22 @@ fn split_concatenated_commands(line: &str) -> String {
         }
     }
 
+    // 注: 旧実装は `trimmed[..pos]` を用いて元文字列を切っていたが、
+    // `pos` は `lower` 上のバイト位置である。`to_lowercase` は一部の
+    // Unicode 文字（土耳其語 İ → i + U+0307 等）でバイト数を変えるため、
+    // 同じバイト位置を `trimmed` に流用すると UTF-8 文字境界を割って
+    // panic する可能性があった。バイト長が一致する一般的なケース
+    // （ASCII / 中日漢字など）では従来通り `trimmed` を切り、原大小文字を
+    // 保つ。バイト長が変わる稀ケースのみ `lower` を切って安全側に倒す。
     let command = match cut {
-        Some(pos) => trimmed[..pos].trim_end().to_string(),
+        Some(pos) => {
+            let source = if lower.len() == trimmed.len() {
+                trimmed
+            } else {
+                lower.as_str()
+            };
+            source[..pos].trim_end().to_string()
+        }
         None => trimmed.to_string(),
     };
     trim_trailing_command_note(&command).to_string()
@@ -832,6 +846,19 @@ mod tests {
     }
 
     #[test]
+    fn split_does_not_panic_on_lowercase_length_change() {
+        // 土耳其語 İ (U+0130, 2 bytes UTF-8) は to_lowercase で
+        // "i\u{307}" (3 bytes) に伸びる。旧実装は lower のバイト位置を
+        // 元文字列に流用していたため、こうした入力で UTF-8 境界を
+        // 割って panic する可能性があった。新実装はバイト長が変わる
+        // 場合に lower 側を切るため、panic せず妥当な結果を返す。
+        let _ = split_concatenated_commands("git status İ git log");
+        // この入力では " git " が 2 か所現れるため cut が Some になり、
+        // 切断結果は最初の "git status..." 相当に丸まる。具体形は
+        // 大小文字正規化の影響を受けるが、ここでは panic しないことが目的。
+    }
+
+    #[test]
     fn splits_concatenated_commands_keeps_single_command_intact() {
         assert_eq!(
             split_concatenated_commands("pnpm --filter @ai-launchpad/browser build"),
@@ -914,7 +941,10 @@ mod tests {
         let observed = parse_observed_approval_with_context("Codex", lines, "test", true)
             .expect("should parse English popup");
         assert_eq!(observed.request.command, None);
-        assert_eq!(observed.request.requested_permission.as_deref(), Some("shell"));
+        assert_eq!(
+            observed.request.requested_permission.as_deref(),
+            Some("shell")
+        );
     }
 
     #[test]
@@ -936,13 +966,8 @@ mod tests {
             "跳过".to_string(),
             "提交".to_string(),
         ];
-        let observed = parse_observed_approval_with_context(
-            "分析未完成任务",
-            lines,
-            "test",
-            true,
-        )
-        .expect("apply changes prompt should parse");
+        let observed = parse_observed_approval_with_context("分析未完成任务", lines, "test", true)
+            .expect("apply changes prompt should parse");
 
         assert_eq!(
             observed.request.command, None,
@@ -1027,16 +1052,14 @@ mod tests {
             "閉じる".to_string(),
             "送信する".to_string(),
         ];
-        let observed = parse_observed_approval_with_context(
-            "Codex",
-            lines,
-            "test",
-            true,
-        )
-        .expect("should parse Japanese plan confirmation");
+        let observed = parse_observed_approval_with_context("Codex", lines, "test", true)
+            .expect("should parse Japanese plan confirmation");
 
         assert_eq!(observed.request.command, None);
-        assert_eq!(observed.request.requested_permission.as_deref(), Some("file"));
+        assert_eq!(
+            observed.request.requested_permission.as_deref(),
+            Some("file")
+        );
     }
 
     #[test]
@@ -1050,15 +1073,13 @@ mod tests {
             "关闭".to_string(),
             "提交".to_string(),
         ];
-        let observed = parse_observed_approval_with_context(
-            "Codex",
-            lines,
-            "test",
-            true,
-        )
-        .expect("should parse Chinese plan confirmation");
+        let observed = parse_observed_approval_with_context("Codex", lines, "test", true)
+            .expect("should parse Chinese plan confirmation");
 
         assert_eq!(observed.request.command, None);
-        assert_eq!(observed.request.requested_permission.as_deref(), Some("file"));
+        assert_eq!(
+            observed.request.requested_permission.as_deref(),
+            Some("file")
+        );
     }
 }

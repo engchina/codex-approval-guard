@@ -17,12 +17,8 @@ use uiautomation::patterns::{UIInvokePattern, UILegacyIAccessiblePattern, UISele
 use uiautomation::types::ControlType;
 use uiautomation::{UIAutomation, UIElement, UITreeWalker};
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
+    Foundation::CloseHandle,
     System::{
-        Diagnostics::ToolHelp::{
-            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-            TH32CS_SNAPPROCESS,
-        },
         SystemInformation::GetTickCount,
         Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION},
     },
@@ -263,7 +259,9 @@ fn parse_window(
                     requested_permission: Some("git_commit_dismiss".to_string()),
                 },
                 raw_text,
-                detected_by: format!("Windows UI Automation {view_name} view observer (git commit)"),
+                detected_by: format!(
+                    "Windows UI Automation {view_name} view observer (git commit)"
+                ),
             });
         }
 
@@ -356,12 +354,17 @@ fn click_no_inner(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
         }
 
         let (matcher, label, type_filter): ClickTargetMatch = if is_git_commit {
-            (is_close_or_cancel_button, "「閉じる/キャンセル」", Some(is_close_button_type))
+            (
+                is_close_or_cancel_button,
+                "「閉じる/キャンセル」",
+                Some(is_close_button_type),
+            )
         } else {
             (is_first_no_option, "「3. いいえ」", None)
         };
 
-        let no_candidates = collect_candidates_with_filter(&raw_walker, window, matcher, type_filter);
+        let no_candidates =
+            collect_candidates_with_filter(&raw_walker, window, matcher, type_filter);
         log_candidates(&mut outcome, label, &no_candidates);
         let no_target = match pick_best(&no_candidates) {
             Some(target) => target,
@@ -386,11 +389,18 @@ fn click_no_inner(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
         ));
         outcome.yes_invoked = true;
         outcome.method = Some(
-            if is_git_commit { "uia-close-button" } else { "uia-no-button" }.to_string(),
+            if is_git_commit {
+                "uia-close-button"
+            } else {
+                "uia-no-button"
+            }
+            .to_string(),
         );
 
         if is_git_commit {
-            outcome.notes.push("Git コミットダイアログのため「送信」処理をスキップします。".to_string());
+            outcome
+                .notes
+                .push("Git コミットダイアログのため「送信」処理をスキップします。".to_string());
             return Ok(outcome);
         }
 
@@ -502,12 +512,21 @@ fn click_yes_inner(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
         }
 
         let (matcher, label, type_filter): ClickTargetMatch = if is_git_commit {
-            (is_close_or_cancel_button, "「閉じる/キャンセル」", Some(is_close_button_type))
+            (
+                is_close_or_cancel_button,
+                "「閉じる/キャンセル」",
+                Some(is_close_button_type),
+            )
         } else {
-            (is_first_yes_or_recommended_option, "「1. はい / N. (推奨)」", None)
+            (
+                is_first_yes_or_recommended_option,
+                "「1. はい / N. (推奨)」",
+                None,
+            )
         };
 
-        let yes_candidates = collect_candidates_with_filter(&raw_walker, window, matcher, type_filter);
+        let yes_candidates =
+            collect_candidates_with_filter(&raw_walker, window, matcher, type_filter);
         log_candidates(&mut outcome, label, &yes_candidates);
         let yes_target = match pick_best(&yes_candidates) {
             Some(target) => target,
@@ -572,7 +591,9 @@ fn click_yes_inner(is_git_commit_hint: bool) -> Result<ClickOutcome, String> {
         );
 
         if is_git_commit {
-            outcome.notes.push("Git コミットダイアログのため「送信」処理をスキップします。".to_string());
+            outcome
+                .notes
+                .push("Git コミットダイアログのため「送信」処理をスキップします。".to_string());
             return Ok(outcome);
         }
 
@@ -990,19 +1011,36 @@ const VK_ESCAPE_RAW: usize = 0x1B;
 /// WM_KEYDOWN の lparam: 繰り返し回数=1, scan code=0x01 (Escape), 拡張ビットなし。
 const ESC_LPARAM_DOWN: isize = 0x0001_0001;
 /// WM_KEYUP の lparam: keydown と同じ + bit30 (前状態=押下) + bit31 (遷移=離す)。
-const ESC_LPARAM_UP: isize = 0xC001_0001u32 as i32 as isize;
+///
+/// 旧実装は `0xC001_0001u32 as i32 as isize` と書いており、64-bit ターゲットで
+/// 符号拡張されて isize 上では `0xFFFF_FFFF_C001_0001` になっていた。
+/// Windows の lParam は 32-bit セマンティクスで使われるため実害はなかったが、
+/// 意図しない sign extension は読み手を混乱させるため、ここでは u32 → u64 →
+/// isize と段階的にゼロ拡張して目に見える定数を `0x0000_0000_C001_0001` に揃える。
+const ESC_LPARAM_UP: isize = 0xC001_0001u32 as u64 as isize;
+
+/// EnumChildWindows のコレクション上限。これを超える子孫 HWND は捨てられ、
+/// `ChildHwndCollector.truncated` に true がセットされる。
+const COLLECT_CHILD_HWNDS_MAX: usize = 64;
+
+struct ChildHwndCollector {
+    hwnds: Vec<windows_sys::Win32::Foundation::HWND>,
+    /// 上限に達した結果、追加の HWND を捨てたかどうか。
+    truncated: bool,
+}
 
 extern "system" fn collect_child_hwnds(
     hwnd: windows_sys::Win32::Foundation::HWND,
     lparam: windows_sys::Win32::Foundation::LPARAM,
 ) -> windows_sys::core::BOOL {
-    let collector = unsafe {
-        &mut *(lparam as *mut Vec<windows_sys::Win32::Foundation::HWND>)
-    };
-    if collector.len() < 64 {
-        collector.push(hwnd);
+    let collector = unsafe { &mut *(lparam as *mut ChildHwndCollector) };
+    if collector.hwnds.len() < COLLECT_CHILD_HWNDS_MAX {
+        collector.hwnds.push(hwnd);
         1
     } else {
+        // 上限到達後は列挙を打ち切るために 0 を返し、ついでに truncated を立てる。
+        // これがないと「Escape が届かなかった原因」を後追いできない。
+        collector.truncated = true;
         0
     }
 }
@@ -1012,14 +1050,13 @@ fn make_esc_input(flags: u32) -> windows_sys::Win32::UI::Input::KeyboardAndMouse
     let mut input: windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT =
         unsafe { std::mem::zeroed() };
     input.r#type = windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT_KEYBOARD;
-    input.Anonymous.ki =
-        windows_sys::Win32::UI::Input::KeyboardAndMouse::KEYBDINPUT {
-            wVk: 0x1B, // VK_ESCAPE
-            wScan: 0,
-            dwFlags: flags,
-            time: 0,
-            dwExtraInfo: 0,
-        };
+    input.Anonymous.ki = windows_sys::Win32::UI::Input::KeyboardAndMouse::KEYBDINPUT {
+        wVk: 0x1B, // VK_ESCAPE
+        wScan: 0,
+        dwFlags: flags,
+        time: 0,
+        dwExtraInfo: 0,
+    };
     input
 }
 
@@ -1030,8 +1067,7 @@ fn force_set_foreground(hwnd_raw: windows_sys::Win32::Foundation::HWND) -> bool 
     if hwnd_raw.is_null() {
         return false;
     }
-    let prev_fg =
-        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
+    let prev_fg = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
     let fg_tid = if !prev_fg.is_null() {
         unsafe {
             windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
@@ -1044,9 +1080,7 @@ fn force_set_foreground(hwnd_raw: windows_sys::Win32::Foundation::HWND) -> bool 
     };
     let my_tid = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
     let attached = if fg_tid != 0 && fg_tid != my_tid {
-        unsafe {
-            windows_sys::Win32::System::Threading::AttachThreadInput(my_tid, fg_tid, 1) != 0
-        }
+        unsafe { windows_sys::Win32::System::Threading::AttachThreadInput(my_tid, fg_tid, 1) != 0 }
     } else {
         false
     };
@@ -1074,8 +1108,7 @@ fn try_send_input_escape(
     if hwnd_raw.is_null() {
         return false;
     }
-    let prev_fg =
-        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
+    let prev_fg = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
     let already_fg = prev_fg == hwnd_raw;
 
     if !already_fg {
@@ -1196,22 +1229,20 @@ fn try_post_escape_via_attached_focus(
     };
     let my_tid = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
     if codex_tid == 0 || codex_tid == my_tid {
-        outcome.notes.push(
-            "AttachThreadInput 経路: TID 取得不可 / 自スレッドのためスキップ。".to_string(),
-        );
+        outcome
+            .notes
+            .push("AttachThreadInput 経路: TID 取得不可 / 自スレッドのためスキップ。".to_string());
         return false;
     }
-    let attached = unsafe {
-        windows_sys::Win32::System::Threading::AttachThreadInput(my_tid, codex_tid, 1)
-    };
+    let attached =
+        unsafe { windows_sys::Win32::System::Threading::AttachThreadInput(my_tid, codex_tid, 1) };
     if attached == 0 {
         outcome
             .notes
             .push("AttachThreadInput 経路: AttachThreadInput 失敗。".to_string());
         return false;
     }
-    let focused_raw =
-        unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetFocus() };
+    let focused_raw = unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetFocus() };
     unsafe {
         windows_sys::Win32::System::Threading::AttachThreadInput(my_tid, codex_tid, 0);
     }
@@ -1257,14 +1288,25 @@ fn try_post_escape_broadcast(
     hwnd_raw: windows_sys::Win32::Foundation::HWND,
     outcome: &mut ClickOutcome,
 ) -> bool {
-    let mut targets: Vec<windows_sys::Win32::Foundation::HWND> = vec![hwnd_raw];
+    let mut collector = ChildHwndCollector {
+        hwnds: Vec::new(),
+        truncated: false,
+    };
     unsafe {
         windows_sys::Win32::UI::WindowsAndMessaging::EnumChildWindows(
             hwnd_raw,
             Some(collect_child_hwnds),
-            &mut targets as *mut _ as windows_sys::Win32::Foundation::LPARAM,
+            &mut collector as *mut _ as windows_sys::Win32::Foundation::LPARAM,
         );
     }
+    if collector.truncated {
+        outcome.notes.push(format!(
+            "Broadcast 経路: 子孫 HWND が {} 件を超えたため列挙を打ち切りました。残りには Escape が届きません。",
+            COLLECT_CHILD_HWNDS_MAX
+        ));
+    }
+    let mut targets: Vec<windows_sys::Win32::Foundation::HWND> = vec![hwnd_raw];
+    targets.extend(collector.hwnds);
     let mut posted = 0usize;
     for target in &targets {
         let ok_down = unsafe {
@@ -1288,9 +1330,9 @@ fn try_post_escape_broadcast(
         }
     }
     if posted == 0 {
-        outcome
-            .notes
-            .push("Broadcast 経路: いずれの HWND にも PostMessage が届きませんでした。".to_string());
+        outcome.notes.push(
+            "Broadcast 経路: いずれの HWND にも PostMessage が届きませんでした。".to_string(),
+        );
         return false;
     }
     outcome.notes.push(format!(
@@ -1344,7 +1386,8 @@ fn try_close_window_via_wm_close(window: &UIElement, outcome: &mut ClickOutcome)
 }
 
 fn click_element_background(element: &UIElement) -> Result<(), String> {
-    let handle = element.get_native_window_handle()
+    let handle = element
+        .get_native_window_handle()
         .map_err(|error| format!("ウィンドウハンドル取得失敗: {error}"))?;
     let hwnd_win: windows::Win32::Foundation::HWND = handle.into();
     let hwnd_raw = hwnd_win.0 as windows_sys::Win32::Foundation::HWND;
@@ -1352,11 +1395,15 @@ fn click_element_background(element: &UIElement) -> Result<(), String> {
         return Err("HWND が NULL です。".to_string());
     }
 
-    let pt = element.get_clickable_point()
+    let pt = element
+        .get_clickable_point()
         .map_err(|error| format!("Clickable point 取得失敗: {error}"))?
         .ok_or_else(|| "Clickable point が取得できませんでした。".to_string())?;
 
-    let mut client_pt = windows_sys::Win32::Foundation::POINT { x: pt.get_x(), y: pt.get_y() };
+    let mut client_pt = windows_sys::Win32::Foundation::POINT {
+        x: pt.get_x(),
+        y: pt.get_y(),
+    };
     unsafe {
         if windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd_raw, &mut client_pt) == 0 {
             return Err("ScreenToClient 変換に失敗しました。".to_string());
@@ -1383,7 +1430,10 @@ fn click_element_background(element: &UIElement) -> Result<(), String> {
     Ok(())
 }
 
-fn invoke_candidate(candidate: &Candidate, parent_window: &UIElement) -> Result<&'static str, String> {
+fn invoke_candidate(
+    candidate: &Candidate,
+    parent_window: &UIElement,
+) -> Result<&'static str, String> {
     if candidate.has_invoke {
         if let Ok(pattern) = candidate.element.get_pattern::<UIInvokePattern>() {
             if let Err(error) = pattern.invoke() {
@@ -1401,7 +1451,10 @@ fn invoke_candidate(candidate: &Candidate, parent_window: &UIElement) -> Result<
         }
     }
     if candidate.has_legacy {
-        if let Ok(pattern) = candidate.element.get_pattern::<UILegacyIAccessiblePattern>() {
+        if let Ok(pattern) = candidate
+            .element
+            .get_pattern::<UILegacyIAccessiblePattern>()
+        {
             if let Ok(()) = pattern.do_default_action() {
                 return Ok("legacy-accessible");
             }
@@ -1487,7 +1540,22 @@ fn safe_process_image(element: &UIElement) -> Option<String> {
 }
 
 fn safe_process_name(element: &UIElement) -> Option<String> {
-    safe_process_id(element).and_then(process_executable_name)
+    // 旧実装は CreateToolhelp32Snapshot + Process32First/NextW で
+    // 全プロセスを毎窓口ごとに走査していたため、observe 周期 (600ms) と
+    // MAX_TOP_LEVEL_WINDOWS (120) の組み合わせで最悪毎秒 200 回の
+    // 全プロセス列挙が走り、polling のレイテンシ要因になっていた。
+    // safe_process_image() の戻り値（フルパス）から basename を切り出すだけで
+    // 十分に exe 名として機能するため、ToolHelp を呼ばずに済ませる。
+    safe_process_image(element).and_then(|path| basename_from_image_path(&path))
+}
+
+fn basename_from_image_path(path: &str) -> Option<String> {
+    let last = path.rsplit(['\\', '/']).next()?;
+    if last.is_empty() {
+        None
+    } else {
+        Some(last.to_string())
+    }
 }
 
 fn process_image_path(process_id: u32) -> Option<String> {
@@ -1508,43 +1576,6 @@ fn process_image_path(process_id: u32) -> Option<String> {
     }
 
     Some(String::from_utf16_lossy(&buffer[..size as usize]))
-}
-
-fn process_executable_name(process_id: u32) -> Option<String> {
-    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-    if snapshot == INVALID_HANDLE_VALUE {
-        return None;
-    }
-
-    let mut entry = PROCESSENTRY32W {
-        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
-        ..Default::default()
-    };
-
-    let mut found = None;
-    let mut ok = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
-    while ok {
-        if entry.th32ProcessID == process_id {
-            found = Some(wide_array_to_string(&entry.szExeFile));
-            break;
-        }
-
-        ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
-    }
-
-    unsafe {
-        CloseHandle(snapshot);
-    }
-
-    found
-}
-
-fn wide_array_to_string(value: &[u16]) -> String {
-    let len = value
-        .iter()
-        .position(|char| *char == 0)
-        .unwrap_or(value.len());
-    String::from_utf16_lossy(&value[..len])
 }
 
 fn window_candidate(window: &UIElement) -> WindowCandidate {

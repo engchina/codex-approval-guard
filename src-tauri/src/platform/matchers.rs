@@ -90,9 +90,9 @@ pub fn looks_like_primary_approval_option(name: &str) -> bool {
         || name.contains("批准")
         || name.contains("確認")
         || name.contains("はい")
-        || lower.contains("approve")
-        || lower.contains("yes")
-        || lower.contains("allow")
+        || contains_ascii_word(&lower, "approve")
+        || contains_ascii_word(&lower, "yes")
+        || contains_ascii_word(&lower, "allow")
 }
 
 /// Codex の ask_user_question 系プロンプトでは「（推荐）」「（推奨）」「(Recommended)」
@@ -149,10 +149,39 @@ pub fn looks_like_primary_rejection_option(name: &str) -> bool {
         || name.contains("拒否")
         || name.contains("拒绝")
         || name.contains("いいえ")
-        || lower.contains("deny")
-        || lower.contains("no")
-        || lower.contains("decline")
-        || lower.contains("reject")
+        || contains_ascii_word(&lower, "deny")
+        || contains_ascii_word(&lower, "no")
+        || contains_ascii_word(&lower, "decline")
+        || contains_ascii_word(&lower, "reject")
+}
+
+/// `haystack` のうち、`needle` が単語境界（英数字とアンダースコア以外）で
+/// 囲まれた位置に現れるかを判定する。`contains("no")` のような部分一致が
+/// "now" / "note" / "know" / "another" などを誤って引っ掛けるのを防ぐ。
+/// `needle` は ASCII 小文字前提で呼び出すこと（呼び出し側で `to_lowercase` 済み）。
+fn contains_ascii_word(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let bytes = haystack.as_bytes();
+    let needle_bytes = needle.as_bytes();
+    let mut idx = 0;
+    while let Some(pos) = haystack[idx..].find(needle) {
+        let start = idx + pos;
+        let end = start + needle_bytes.len();
+        let before_ok = start == 0 || !is_word_byte(bytes[start - 1]);
+        let after_ok = end == bytes.len() || !is_word_byte(bytes[end]);
+        if before_ok && after_ok {
+            return true;
+        }
+        // 1 byte 進めて次のマッチを探す。needle は ASCII 想定なので安全。
+        idx = start + 1;
+    }
+    false
+}
+
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
 }
 
 pub fn is_submit_button(name: &str) -> bool {
@@ -278,6 +307,32 @@ mod tests {
         assert!(!is_first_yes_option("2. 是，且本次会话不再询问"));
         assert!(!is_first_yes_option("3. 否，请告知 Codex 如何调整"));
         assert!(!is_first_yes_option("提交"));
+    }
+
+    #[test]
+    fn rejection_matcher_does_not_match_no_as_substring() {
+        // 旧実装は contains("no") で "now" / "note" / "another" にも反応していた。
+        // 新実装では単語境界を要求するため、これらの誤マッチは起こらない。
+        assert!(!looks_like_primary_rejection_option(
+            "3. Now switch to plan B"
+        ));
+        assert!(!looks_like_primary_rejection_option("3. Note this option"));
+        assert!(!looks_like_primary_rejection_option("3. Another option"));
+        // 本来の no/deny/reject はもちろん拾える。
+        assert!(looks_like_primary_rejection_option("3. No, do not run"));
+        assert!(looks_like_primary_rejection_option("3. Deny the request"));
+        assert!(looks_like_primary_rejection_option("3. Reject and stop"));
+    }
+
+    #[test]
+    fn approval_matcher_does_not_match_yes_as_substring() {
+        // "eyes" / "keystone" / "yesterday" などへの誤マッチを防ぐ。
+        assert!(!looks_like_primary_approval_option("1. Eyes on it"));
+        assert!(!looks_like_primary_approval_option("1. Yesterday plan"));
+        // 本来の yes/approve/allow は引き続き拾う。
+        assert!(looks_like_primary_approval_option("1. Yes, proceed"));
+        assert!(looks_like_primary_approval_option("1. Approve and run"));
+        assert!(looks_like_primary_approval_option("1. Allow access"));
     }
 
     #[test]

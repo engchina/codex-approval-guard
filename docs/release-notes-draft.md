@@ -1,68 +1,80 @@
 # 次回リリースノート草稿
 
-このドキュメントは `v0.1.8` の Codex Approval Guard リリース用の草稿です。
+このドキュメントは `v0.1.9` の Codex Approval Guard リリース用の草稿です。
 
-実装言語ではなくリリースノート言語で書きます。`CHANGELOG.md` の `## Unreleased` を起点に、ユーザーが理解できる粒度に書き直してここに記録してください。
+実装言語ではなくリリースノート言語で書きます。`CHANGELOG.md` の `## 0.1.9 - 2026-05-27` を起点に、ユーザーが理解できる粒度に書き直してここに記録してください。
 
 ## Suggested Release Title
 
-`Codex Approval Guard v0.1.8`
+`Codex Approval Guard v0.1.9`
 
 ## Short Summary
 
-v0.1.8 は macOS Accessibility backend を実装し、macOS でも Codex Desktop の承認ダイアログ検出、自動承認/拒否、git commit dialog の閉鎖、サイドバーの承認待ち会話アクティブ化を扱えるようにします。あわせて Windows / macOS で共通利用する文字列 matcher を整理し、複数会話の承認待ちが詰まる問題を改善します。
+v0.1.9 は、自動承認の異常連発や UI Automation の連続失敗を検出してガードを自動停止する回路ブレーカーを追加します。あわせて、タスクトレイ常駐、単一インスタンス起動、適応 polling、audit log の記録改善、CSP 有効化、承認/拒否ラベルの誤検出修正を行い、長時間常駐させたときの安全性と安定性を高めます。
 
 ## Suggested GitHub Release Body
 
 ### Highlights
 
-- macOS Accessibility API を使う本実装を追加しました。
-- Codex Desktop プロセスを `NSWorkspace.runningApplications` から列挙し、AX ツリーを再帰走査して承認ダイアログとサイドバーの「承認が必要」バッジを検出します。
-- macOS でも `AXPress` による「1. はい / 3. いいえ / 閉じる / 送信」操作と、`AXRaise` によるサイドバー会話のアクティブ化に対応しました。
-- `CGEventSourceSecondsSinceLastEventType` で user idle を取得し、Windows 版と同じ 1500ms ガードを適用します。
-- アクティブ会話が短い間隔で承認を生成し続ける場合でも、他プロジェクトのサイドバー承認待ちが処理されやすくなりました。
-- プラットフォーム非依存の文字列 matcher を `platform/matchers.rs` に集約し、Windows / macOS の判定差分を減らしました。
+- 同じコマンドが短時間に自動承認され続けた場合、ガードを paused に切り替える回路ブレーカーを追加しました。
+- UI Automation の観測が連続失敗した場合も paused に切り替え、理由を audit log に残します。
+- ウィンドウの X ボタンで終了せず、タスクトレイに常駐するようになりました。
+- Windows / macOS で単一インスタンス起動を強制し、複数プロセスが同じ承認ダイアログを操作する競合を防ぎます。
+- 背景 polling を固定間隔から適応型に変更し、検出直後は速く、アイドル時は軽く動くようにしました。
+- audit log の脱敏対象と記録粒度を改善し、短時間の繰り返し操作も追跡しやすくしました。
+- WebView CSP を有効化し、外部 URL を開く backend コマンドを http/https のみに制限しました。
 
 ### Why This Release Matters
 
-これまで macOS backend は placeholder に近く、承認ダイアログの観測や自動操作は Windows 版が中心でした。
+Codex 側がループ状態になったり、UI Automation が継続的に失敗したりすると、自動操作ツールは「止まる条件」を持っていない限り同じ操作を繰り返す可能性があります。
 
-今回の更新で macOS Accessibility backend が実際に AX ツリーを読み、承認・拒否・閉鎖・サイドバー pending conversation のアクティブ化まで扱えるようになります。macOS で利用する場合は、システム設定のアクセシビリティ権限を Codex Approval Guard に許可する必要があります。
+v0.1.9 では、こうした異常を検出した時点で `policy.paused = true` に倒し、作動理由を `circuit_breaker:*` として audit log に残します。ユーザーは原因を確認してから手動で再開できます。
 
-また、アクティブ会話が承認を連続生成するケースでは、他会話の pending badge が後回しになり続けることがありました。v0.1.8 ではメイン操作成功後にサイドバーの pending 会話を 1 件アクティブ化し、次回ポーリングで処理されるようにしています。
+また、常駐アプリとしての扱いやすさも改善しました。ウィンドウを閉じても監視は継続し、トレイから表示・終了できます。単一インスタンス化により、複数起動による policy 書き込み競合や二重クリックも避けられます。
 
 ### User-Facing Improvements
 
-#### macOS 対応
+#### 安全停止
 
-- macOS Accessibility API による承認ダイアログ観測を追加。
-- macOS での approve / deny / dismiss 操作に対応。
-- macOS での user idle 判定に対応。
-- アクセシビリティ権限が未許可の場合は snapshot details に理由を表示。
+- auto-approve burst guard を追加。
+- UIA observe failure guard を追加。
+- 回路ブレーカー作動時は paused に切り替え、audit log に作動理由を記録。
 
-#### 自動承認 / 拒否 / 閉鎖
+#### 常駐動作
 
-- アクティブ会話の承認処理後、サイドバーの別 pending 会話を次回処理しやすいようにアクティブ化。
-- macOS で非文字列の AX 属性値を誤って CFString として扱わないように改善。
-- macOS で可視ラベルが `AXStaticText` 子要素に分離されているボタンも、クリック可能な祖先要素へ引き上げて操作。
-- macOS の git commit dialog 閉鎖で、通常の Codex メインウィンドウを誤って閉じるリスクを低減。
+- タスクトレイアイコンを追加。
+- X ボタンは終了ではなく非表示に変更。
+- トレイメニューから「ウィンドウを表示」と「終了」を実行可能。
+- Windows / macOS で単一インスタンス起動を強制。
 
-#### 保守性
+#### 精度と安定性
 
-- Windows / macOS 共通の文字列 matcher を `platform/matchers.rs` に集約。
-- `is_first_yes_option`、`is_first_no_option`、`is_recommended_option`、`is_submit_button`、`is_close_or_cancel_button`、`looks_like_approval_keyword` を両 backend から共有。
+- `yes` / `no` / `approve` / `deny` などの英語 matcher を単語境界ベースに変更し、`now` や `eyes` などへの誤マッチを防止。
+- command parser で Unicode の lowercase 変換によりバイト長が変わる入力でも panic しないように修正。
+- Windows UIA のプロセス名取得で全プロセス列挙を繰り返さず、polling の負荷を軽減。
+- Escape broadcast 経路で子孫 HWND も対象にし、列挙上限に達した場合は notes に残すように改善。
+
+#### 監査とセキュリティ
+
+- audit log の擬似 dedup を廃止し、自動操作ごとの記録を保持。
+- `window_title` / `cwd` / `target_paths` / `requested_permission` も脱敏対象に追加。
+- WebView CSP を有効化。
+- 外部 URL を開く backend コマンドを http/https のみに制限。
 
 ### Suggested "Upgrade Notes" Section
 
-macOS で利用する場合は、システム設定 → プライバシーとセキュリティ → アクセシビリティ で Codex Approval Guard を許可してください。
+このリリースでは既存設定の移行操作は不要です。
 
-Windows では既存設定の移行は不要です。通常どおり新しいアプリ bundle をインストールしてください。
+ウィンドウの X ボタンはアプリ終了ではなくトレイへの非表示になります。監視を完全に止めたい場合は、トレイメニューの「終了」を使ってください。
+
+回路ブレーカーにより paused になった場合は、audit log の `circuit_breaker:*` エントリで理由を確認してから手動で再開してください。
 
 ### Suggested "Who Should Update" Section
 
 このリリースは特に次のユーザーに有用です:
 
-- macOS で Codex Approval Guard を使いたい
-- 複数プロジェクト / 複数会話で承認待ちが同時に発生する
-- アクティブ会話の承認が多く、別会話の pending badge が処理されにくい
-- Windows / macOS の承認ラベル判定を揃えたい
+- Codex Approval Guard を長時間常駐させて使う
+- Codex 側の承認ループや UI Automation の不調時に自動操作を止めたい
+- Windows / macOS で複数インスタンス起動による競合を避けたい
+- audit log の脱敏範囲と記録粒度を改善したい
+- 承認/拒否ラベルの誤検出を減らしたい

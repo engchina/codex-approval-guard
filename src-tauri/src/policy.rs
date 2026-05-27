@@ -15,6 +15,20 @@ impl ApprovalRequest {
         let mut next = self.clone();
         next.prompt_text = redact_sensitive_text(&next.prompt_text);
         next.command = next.command.map(|command| redact_sensitive_text(&command));
+        // window_title / cwd / target_paths / requested_permission も同じフィルタを通す。
+        // 旧実装は prompt_text / command しか filter していなかったため、cwd や
+        // target_paths に含まれる secret/token を含むパスが audit log にそのまま
+        // 残るリスクがあった。
+        next.window_title = redact_sensitive_text(&next.window_title);
+        next.cwd = next.cwd.map(|cwd| redact_sensitive_text(&cwd));
+        next.target_paths = next
+            .target_paths
+            .into_iter()
+            .map(|path| redact_sensitive_text(&path))
+            .collect();
+        next.requested_permission = next
+            .requested_permission
+            .map(|permission| redact_sensitive_text(&permission));
         next
     }
 }
@@ -164,28 +178,75 @@ fn is_git_commit_command(command: Option<&str>) -> bool {
     git_subcommand(command).as_deref() == Some("commit")
 }
 
+/// 空白で区切られた token のうち、token / secret / password / credential を
+/// 含むものを `[REDACTED]` に置換する。`split_whitespace().join(" ")` だと
+/// tab / 改行 / 連続空白が単一スペースに潰れて元のフォーマットが失われるため、
+/// 区切り文字を保持したまま token 単位で置換する。
 fn redact_sensitive_text(input: &str) -> String {
-    input
-        .split_whitespace()
-        .map(|part| {
-            let lower = part.to_lowercase();
-            if lower.contains("token")
-                || lower.contains("secret")
-                || lower.contains("password")
-                || lower.contains("credential")
-            {
-                "[REDACTED]"
-            } else {
-                part
+    let mut output = String::with_capacity(input.len());
+    let mut token_start: Option<usize> = None;
+    for (idx, ch) in input.char_indices() {
+        if ch.is_whitespace() {
+            if let Some(start) = token_start.take() {
+                output.push_str(&redact_token(&input[start..idx]));
             }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+            output.push(ch);
+        } else if token_start.is_none() {
+            token_start = Some(idx);
+        }
+    }
+    if let Some(start) = token_start {
+        output.push_str(&redact_token(&input[start..]));
+    }
+    output
+}
+
+fn redact_token(token: &str) -> String {
+    let lower = token.to_lowercase();
+    if lower.contains("token")
+        || lower.contains("secret")
+        || lower.contains("password")
+        || lower.contains("credential")
+    {
+        "[REDACTED]".to_string()
+    } else {
+        token.to_string()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redact_preserves_separators() {
+        // 旧実装は split_whitespace().join(" ") で tab / 連続空白 / 改行を単一
+        // スペースに潰していた。新実装は区切り文字を維持する。
+        let redacted = redact_sensitive_text("hello\ttoken=abc\n  world");
+        assert_eq!(redacted, "hello\t[REDACTED]\n  world");
+    }
+
+    #[test]
+    fn redacted_filters_all_text_fields() {
+        let req = ApprovalRequest {
+            id: None,
+            source_app: "Codex Desktop".to_string(),
+            window_title: "secret-window".to_string(),
+            prompt_text: "run with token=abc".to_string(),
+            command: Some("echo password=xyz".to_string()),
+            cwd: Some("/home/user/.credentials".to_string()),
+            target_paths: vec!["/etc/secret/config".to_string()],
+            requested_permission: Some("shell".to_string()),
+        };
+        let red = req.redacted();
+        assert_eq!(red.window_title, "[REDACTED]");
+        assert!(red.prompt_text.contains("[REDACTED]"));
+        assert_eq!(red.command.as_deref(), Some("echo [REDACTED]"));
+        assert_eq!(red.cwd.as_deref(), Some("[REDACTED]"));
+        assert_eq!(red.target_paths, vec!["[REDACTED]".to_string()]);
+        // 通常値はそのまま残る
+        assert_eq!(red.requested_permission.as_deref(), Some("shell"));
+    }
 
     fn policy() -> PolicyConfig {
         PolicyConfig::default_for_current_workspace()
@@ -229,9 +290,19 @@ mod tests {
 
     #[test]
     fn does_not_auto_approve_git_add_shell_command_by_default() {
-        for cmd in ["git add", "git add .", "git add -A", "git.exe add src/", "GIT ADD ."] {
+        for cmd in [
+            "git add",
+            "git add .",
+            "git add -A",
+            "git.exe add src/",
+            "GIT ADD .",
+        ] {
             let decision = policy().evaluate(&request(cmd));
-            assert_eq!(decision.action, DecisionAction::Deny, "expected Deny for `{cmd}`");
+            assert_eq!(
+                decision.action,
+                DecisionAction::Deny,
+                "expected Deny for `{cmd}`"
+            );
             assert!(!decision.would_auto_approve);
             assert_eq!(decision.matched_rule.as_deref(), Some("manual_git_add"));
         }
@@ -247,7 +318,11 @@ mod tests {
             "git.exe commit",
         ] {
             let decision = policy().evaluate(&request(cmd));
-            assert_eq!(decision.action, DecisionAction::Deny, "expected Deny for `{cmd}`");
+            assert_eq!(
+                decision.action,
+                DecisionAction::Deny,
+                "expected Deny for `{cmd}`"
+            );
             assert!(!decision.would_auto_approve);
             assert_eq!(decision.matched_rule.as_deref(), Some("manual_git_commit"));
         }
@@ -257,7 +332,11 @@ mod tests {
     fn still_approves_other_git_commands() {
         for cmd in ["git status", "git push", "git commit-graph write"] {
             let decision = policy().evaluate(&request(cmd));
-            assert_eq!(decision.action, DecisionAction::Approve, "expected Approve for `{cmd}`");
+            assert_eq!(
+                decision.action,
+                DecisionAction::Approve,
+                "expected Approve for `{cmd}`"
+            );
         }
     }
 
@@ -268,7 +347,11 @@ mod tests {
         // git add は許可される
         for cmd in ["git add .", "git.exe add src/"] {
             let decision = p.evaluate(&request(cmd));
-            assert_eq!(decision.action, DecisionAction::Approve, "expected Approve for `{cmd}`");
+            assert_eq!(
+                decision.action,
+                DecisionAction::Approve,
+                "expected Approve for `{cmd}`"
+            );
             assert!(decision.would_auto_approve);
         }
         // git commit はまだ Deny されている
@@ -282,9 +365,17 @@ mod tests {
         let mut p = policy();
         p.allow_git_commit = true;
         // git commit は許可される
-        for cmd in ["git commit", "git commit -m \"fix\"", "git.exe commit --amend"] {
+        for cmd in [
+            "git commit",
+            "git commit -m \"fix\"",
+            "git.exe commit --amend",
+        ] {
             let decision = p.evaluate(&request(cmd));
-            assert_eq!(decision.action, DecisionAction::Approve, "expected Approve for `{cmd}`");
+            assert_eq!(
+                decision.action,
+                DecisionAction::Approve,
+                "expected Approve for `{cmd}`"
+            );
             assert!(decision.would_auto_approve);
         }
         // git add はまだ Deny されている
@@ -303,7 +394,10 @@ mod tests {
         req.requested_permission = Some("git_commit_dismiss".to_string());
         let decision = p.evaluate(&req);
         assert_eq!(decision.action, DecisionAction::Dismiss);
-        assert_eq!(decision.matched_rule.as_deref(), Some("auto_dismiss_git_commit"));
+        assert_eq!(
+            decision.matched_rule.as_deref(),
+            Some("auto_dismiss_git_commit")
+        );
     }
 
     #[test]
@@ -313,6 +407,9 @@ mod tests {
         let decision = policy().evaluate(&req);
         assert_eq!(decision.action, DecisionAction::Dismiss);
         assert!(!decision.would_auto_approve);
-        assert_eq!(decision.matched_rule.as_deref(), Some("auto_dismiss_git_commit"));
+        assert_eq!(
+            decision.matched_rule.as_deref(),
+            Some("auto_dismiss_git_commit")
+        );
     }
 }

@@ -2,19 +2,12 @@ use std::{
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, Write},
     path::PathBuf,
-    sync::OnceLock,
 };
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use uuid::Uuid;
 
 use crate::policy::{ApprovalDecision, ApprovalRequest};
-
-static APP_START_TIME: OnceLock<DateTime<Utc>> = OnceLock::new();
-
-pub fn get_app_start_time() -> DateTime<Utc> {
-    *APP_START_TIME.get_or_init(Utc::now)
-}
 
 #[derive(Clone)]
 pub struct AuditStore {
@@ -43,33 +36,15 @@ impl AuditStore {
         request: &ApprovalRequest,
         decision: &ApprovalDecision,
     ) -> Result<AuditEntry, String> {
-        let is_startup = request.command.as_ref().map_or(false, |cmd| {
-            let cmd_lower = cmd.to_lowercase();
-            cmd_lower.contains("tauri dev")
-                || cmd_lower.contains("tauri:dev")
-                || cmd_lower.contains("npm run dev")
-                || cmd_lower.contains("npm run tauri")
-                || cmd_lower.contains("cargo tauri dev")
-        });
-
-        let created_at = if is_startup {
-            get_app_start_time().to_rfc3339()
-        } else {
-            Utc::now().to_rfc3339()
-        };
-
-        // Check if there is already an entry with the same created_at and command/window_title
-        if let Ok(recent) = self.list_recent(10) {
-            if let Some(existing) = recent.iter().find(|entry| {
-                entry.created_at == created_at && entry.request.command == request.command
-            }) {
-                return Ok(existing.clone());
-            }
-        }
-
+        // 注: 旧実装は append のたびに list_recent(10) で全量 jsonl を読み込んで
+        // created_at + command の組み合わせで dedup を試みていたが、created_at は
+        // nano 精度の Utc::now() を含むため非起動イベントでは事実上 hit せず、
+        // 起動イベントでのみ偶発的に dedup が走るだけの dead code だった。
+        // 現状 append() は auto_approve_observed_request 経路でしか呼ばれず、
+        // polling での重複書き込みは発生しないため、ここでの dedup は撤去する。
         let entry = AuditEntry {
             id: Uuid::new_v4().to_string(),
-            created_at,
+            created_at: Utc::now().to_rfc3339(),
             request: request.redacted(),
             decision: decision.clone(),
         };
@@ -124,7 +99,9 @@ mod tests {
     use crate::policy::{ApprovalDecision, ApprovalRequest, DecisionAction, RiskLevel};
 
     #[test]
-    fn test_audit_deduplication() {
+    fn append_writes_each_call_as_distinct_entry() {
+        // 旧実装の偽 dedup を撤去したため、同じ request を 2 回 append すると
+        // それぞれが独立した id / created_at を持つ別エントリとして残る。
         let temp_dir = std::env::temp_dir();
         let path = temp_dir.join(format!("test_audit_{}.jsonl", uuid::Uuid::new_v4()));
         let store = AuditStore::new(path.clone());
@@ -148,18 +125,10 @@ mod tests {
             would_auto_approve: true,
         };
 
-        // First append
         let entry1 = store.append(&req, &decision).unwrap();
-        assert_eq!(entry1.created_at, get_app_start_time().to_rfc3339());
-
-        // Second append (should deduplicate and return the same entry)
         let entry2 = store.append(&req, &decision).unwrap();
-        assert_eq!(entry1.id, entry2.id);
+        assert_ne!(entry1.id, entry2.id);
 
-        let list = store.list_recent(10).unwrap();
-        assert_eq!(list.len(), 1);
-
-        // A different command should not deduplicate
         let req2 = ApprovalRequest {
             command: Some("npm test".to_string()),
             ..req.clone()
@@ -167,8 +136,8 @@ mod tests {
         let entry3 = store.append(&req2, &decision).unwrap();
         assert_ne!(entry1.id, entry3.id);
 
-        let list2 = store.list_recent(10).unwrap();
-        assert_eq!(list2.len(), 2);
+        let list = store.list_recent(10).unwrap();
+        assert_eq!(list.len(), 3);
 
         let _ = std::fs::remove_file(path);
     }

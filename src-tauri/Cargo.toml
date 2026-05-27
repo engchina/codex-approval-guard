@@ -1,6 +1,6 @@
 [package]
 name = "codex-approval-guard"
-version = "0.1.8"
+version = "0.1.9"
 description = "Scoped Codex approval assistant"
 authors = ["engchina"]
 edition = "2021"
@@ -24,10 +24,15 @@ semver = "1"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 uiautomation = "0.24.4"
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi"] }
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+# 単一インスタンス強制（policy.json の read-modify-write 競合と、複数インスタンスが
+# 同時に UI Automation でクリックを取り合う事故を防ぐ）。Windows/macOS のみ対応。
+tauri-plugin-single-instance = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# 単一インスタンス強制（Windows と同じ意図）。
+tauri-plugin-single-instance = "2"
 # macOS Accessibility API への FFI。AXUIElement / AXObserver / kAX* 定数を提供。
 accessibility-sys = "0.1"
 core-foundation = "0.10"
